@@ -2,6 +2,7 @@
 import logging
 import time
 import threading
+import functools 
 
 import numpy as np
 
@@ -328,6 +329,149 @@ class DerivedSignal(Signal):
     def _repr_info(self):
         yield from super()._repr_info()
         yield ('derived_from', self._derived_from)
+
+class ScpiBaseSignal(Signal):
+    '''A read-only SCPI signal -- that is, one without setters
+
+    Keyword arguments are passed on to the base class (Signal) initializer
+
+    Parameters
+    ----------
+    scpi_cl : 
+        The instrument control layer object which has write, ask, and a dictionary of commands (_cmds) 
+    name : str
+        The name of the command to read from [_cmds]
+    configs : dict, optional 
+        The configuration dictionary that is sent to get if its a long getter
+
+    '''
+    def __init__(self, scpi_cl, cmd_name, *, 
+                precision = 7, configs = {}, dtype = 'number', 
+                shape = 1, **kwargs):
+
+        cmd = scpi_cl._cmds[cmd_name]
+        self._read_name = cmd.name
+
+        self._scpi_cl = scpi_cl 
+        super().__init__(name = self._read_name, **kwargs)
+        self.lookup = cmd.lookup
+        self.is_config = cmd.is_config
+        self.precision = precision
+        self.doc = cmd.doc
+        self.dtype = dtype
+        self.shape = shape
+        self.delay = None
+
+        # TODO: limits 
+        # if scpi_cl._cmds[cmd_name].limits is not None:
+        #     self.scpi_limits = tuple(scpi_cl._cmds[cmd_name].limits)
+        # else: 
+        #     self.scpi_limits = self.limits
+
+        # TODO: Instrbuilder will use a list of "limits" 
+        #       in this case (when len(limits) > 2 or type(limits) is Str) 
+        #       the value set has to be a member of this list.
+        #       Does this break bluesky?
+
+        # TODO: my assumption is that the ophyd 'enum_strs' is the same as the 
+        #       instrabuilder lookup tables. Confirm this is correct.
+        self.enum_strs = list(scpi_cl._cmds[cmd.name].lookup.keys())
+
+        # setup the getter 
+        _get = functools.partial(scpi_cl.get, name = self._read_name, configs = configs)
+        self.get = _get
+
+        # TODO -- better way to do this? 
+        # setup the setter in case this signal is a setter (will be converted to self.set in the subclass)
+        self._set = functools.partial(scpi_cl.set, name = self._read_name, configs = configs)
+
+
+    def _repr_info(self):
+        yield ('read_name', self._read_name)
+        yield from super()._repr_info()
+
+
+    def describe(self):
+        """Return the description as a dictionary
+
+        Returns
+        -------
+        dict
+            Dictionary of name and formatted description string
+        """
+        desc = {'source': '{}:{}'.format(self._scpi_cl.nickname, self._read_name), }
+
+        val = self.value
+        desc['dtype'] = self.dtype
+        desc['shape'] = self.shape
+
+        try:
+            desc['precision'] = int(self.precision)
+        except (ValueError, TypeError):
+            pass
+
+        low_limit, high_limit = self.limits
+        desc['lower_ctrl_limit'] = low_limit
+        desc['upper_ctrl_limit'] = high_limit
+
+        if self.enum_strs:
+            desc['enum_strs'] = self.enum_strs
+
+        return {self.name: desc}
+
+    def read(self):
+        """Read the signal and format for data collection
+
+        Returns
+        -------
+        dict
+            Dictionary of value timestamp pairs
+        """
+
+        return {self.name: {'value': self.value,
+                            'timestamp': self.timestamp}}
+
+    # TODO: limits 
+    # @property
+    # def limits(self):
+    #     return self.scpi_limits
+
+
+class ScpiSignal(ScpiBaseSignal):
+    '''A read-write SCPI signal -- that is, with a setter and a getter
+
+    Keyword arguments are passed on to the base class (Signal) initializer
+
+    Parameters
+    ----------
+    scpi_cl : 
+        The instrument control layer object which has write, ask, and a dictionary of commands (_cmds) 
+    name : str
+        The name of the command to read from [_cmds]
+    configs : dict, optional 
+        The configuration dictionary that is sent to get if its a long getter
+    '''
+    def set(self, value):        
+        st = Status()
+
+        def check_return(ret):
+            if ret[0]:
+                st._finished()
+
+        if self.delay:
+            def sleep_and_finish():
+                time.sleep(self.delay) # in sim.py time is imported as ttime, not sure why 
+                ret = self._set(value)
+                check_return(ret)
+
+            threading.Thread(target=sleep_and_finish, daemon=True).start()
+
+        else:
+            ret = self._set(value)
+            check_return(ret)
+
+        return st
+
 
 
 class EpicsSignalBase(Signal):
