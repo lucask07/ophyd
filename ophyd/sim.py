@@ -380,7 +380,7 @@ class SynGauss(SynSignal):
 
     Example
     -------
-    motor = SynAxis(name='motor')
+    motor = SynAxis(name='motor') ---> LJK SynAxis is a Device, that's why we can read it
     det = SynGauss('det', motor, 'motor', center=0, Imax=1, sigma=1)
     """
 
@@ -399,6 +399,43 @@ class SynGauss(SynSignal):
                 v = int(random_state.poisson(np.round(v), 1))
             elif noise == 'uniform':
                 v += random_state.uniform(-1, 1) * noise_multiplier
+            return v
+
+        super().__init__(func=func, name=name, **kwargs)
+
+
+class StatCalculator(SynSignal):
+    """
+    Evaluate a statistic from a Device that produces a 1D or 2D np.array
+        (e.g. an imaging detector) [dervied from SynGauss]
+
+    Parameters
+    ----------
+    name : string
+    img : Device
+        device that captures an image and stores it in memory to .value
+        as an np.array 
+    signal_name : string 
+        name of the signal where the value is stored (e.g 'cam_img')
+    stat_func : callable
+        For example: np.mean
+
+    Example
+    -------
+    img = SynDetector(name='camera') ---> SynAxis is a Device, that's why we can read it 
+                                          (as opposed to a Component)
+    img_stats_std = StatCalculator('camera_avg', img, 'cam_img', np.std)
+    """
+
+    def __init__(self, name, img, signal_name, stat_func, **kwargs):
+
+        self._img = getattr(img, signal_name)
+
+        def func():
+            m = self._img.value # the actual numeric value of the image is "hidden",
+                                # not accessible by read()
+                                # since all we want the RE to see is the UID/filename
+            v = stat_func(m)
             return v
 
         super().__init__(func=func, name=name, **kwargs)
@@ -738,6 +775,125 @@ class SynSignalWithRegistry(SynSignal):
         self._path_stem = None
         self._result.clear()
 
+class SynSignalWithFileSave(SynSignal):
+    """
+    A SynSignal integrated with databroker.assets (LJK)
+
+    Parameters
+    ----------
+    func : callable, optional
+        This function sets the signal to a new value when it is triggered.
+        Expected signature: ``f() -> value``.
+        By default, triggering the signal does not change the value.
+    name : string, keyword only
+    parent : Device, optional
+        Used internally if this Signal is made part of a larger Device.
+    loop : asyncio.EventLoop, optional
+        used for ``subscribe`` updates; uses ``asyncio.get_event_loop()`` if
+        unspecified
+    save_path : str, optional
+        Path to save files to, if None make a temp dir, defaults to None.
+    save_func : function, optional
+        The function to save the data, function signature must be:
+        `func(file_path, array)`, defaults to np.save
+    save_spec : str, optional
+        The spec for the save function, defaults to 'RWFS_NPY'
+    save_ext : str, optional
+        The extension to add to the file name, defaults to '.npy'
+
+    """
+
+    def __init__(self, *args, save_path=None,
+                 save_func=np.save, save_spec='NPY_SEQ', save_ext='npy',
+                 **kwargs):
+        super().__init__(*args, **kwargs)
+        self.save_func = save_func
+        self.save_ext = save_ext
+        self._resource_uid = None
+        self._datum_counter = None
+        self._asset_docs_cache = deque()
+        if save_path is None:
+            self.save_path = mkdtemp()
+        else:
+            self.save_path = save_path
+        self._spec = save_spec  # spec name stored in resource doc
+
+        self._file_stem = None
+        self._path_stem = None
+        self._result = {}
+        self._value = None # where we hold the image in memory so that a stats module 
+                           # can do calculations 
+
+    def stage(self):
+        self._resource_uid = new_uid()
+        # previous SynSignalWithRegistry used a full uid for the resource labeling and 
+        #  a separate short uid for the saved file; this is confusing -- use the uid for both 
+        self._file_stem = self._resource_uid 
+        self._path_stem = os.path.join(self.save_path, self._file_stem)
+        self._datum_counter = itertools.count()
+
+        resource = {'spec': self._spec,
+                    'root': self.save_path,
+                    'resource_path': self._file_stem,
+                    'resource_kwargs': {},
+                    'path_semantics': os.name}
+
+        resource['uid'] = self._resource_uid
+        self._asset_docs_cache.append(('resource', resource))
+
+    def trigger(self):
+        super().trigger()
+        # save file stash file name
+        self._result.clear()
+        for idx, (name, reading) in enumerate(super().read().items()):
+
+            datum_cnt = next(self._datum_counter)
+
+            # Save the actual reading['value'] to disk. For a real detector,
+            # this part would be done by the detector IOC, not by ophyd.
+            self.save_func('{}_{}_{}.{}'.format(self._path_stem, idx, datum_cnt,
+                                             self.save_ext), reading['value'])
+            datum = {'resource': self._resource_uid,
+                     'datum_kwargs': dict(index=idx)}
+
+            # We need to generate the datum_id.
+            datum_id = '{}/{}'.format(self._resource_uid,
+                                          datum_cnt)
+            datum['datum_id'] = datum_id
+            self._asset_docs_cache.append(('datum', datum))
+            # And now change the reading in place, replacing the value with
+            # a reference to Registry.
+            # but first store a copy of the "image"
+            self._value = reading['value']
+            reading['value'] = datum_id
+            self._result[name] = reading
+
+        return NullStatus()
+
+    def read(self):
+        # The "value" read is the filename; this filename will be put into the
+        # sqlite database generated by bluesky, but the entire "image" will not be
+        return self._result
+
+    def describe(self):
+        res = super().describe()
+        for key in res:
+            res[key]['external'] = "FILESTORE"
+        return res
+
+    def collect_asset_docs(self):
+        items = list(self._asset_docs_cache)
+        self._asset_docs_cache.clear()
+        for item in items:
+            yield item
+
+    def unstage(self):
+        self._resource_uid = None
+        self._datum_counter = None
+        self._asset_docs_cache.clear()
+        self._file_stem = None
+        self._path_stem = None
+        self._result.clear()
 
 class NumpySeqHandler:
     specs = {'NPY_SEQ'}
@@ -989,6 +1145,33 @@ class FakeEpicsSignalRO(SynSignalRO, FakeEpicsSignal):
 fake_device_cache = {EpicsSignal: FakeEpicsSignal,
                      EpicsSignalRO: FakeEpicsSignalRO}
 
+class Camera(Device):
+    # LJK 
+    img = Component(SynSignalWithFileSave, func=lambda: np.array(np.random.random(10)),
+                            name='img', 
+                            save_path = '/Users/koer2434/Google Drive/UST/research/bluesky/data',
+                            kind = Kind.normal)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.read_attrs = ['img']
+
+    def stage(self):
+        return self.img.stage()
+
+    def trigger(self):
+        return self.img.trigger() 
+
+'''
+# TODO: How to make a device that includes Devices? 
+#       this runs but the only component is that of img_stats 
+#       the cam is not included in bluesky info 
+#       nor is it triggered 
+'''
+class CameraWithStats(Device):
+    cam = Camera(name = 'cam')
+    img_stats = Component(StatCalculator, name = 'camera_sum', img = cam, 
+        signal_name = 'img', stat_func = np.sum, kind=Kind.hinted)
 
 def hw():
     "Build a set of synthetic hardware (hence the abbreviated name, hw)"
@@ -1045,6 +1228,12 @@ def hw():
 
     motor_no_hints1 = SynAxisNoHints(name='motor1', labels={'motors'})
     motor_no_hints2 = SynAxisNoHints(name='motor2', labels={'motors'})
+
+    cam_img = Camera(name = 'cam') # this is a device
+    img_stats = StatCalculator('camera_sum', cam_img, 'img', np.sum)
+
+    cam_w_stats = CameraWithStats(name = 'cam_w_stats')
+
     # Because some of these reference one another we must define them (above)
     # before we pack them into a namespace (below).
 
@@ -1082,6 +1271,9 @@ def hw():
         motor_no_hints1=motor_no_hints1,
         motor_no_hints2=motor_no_hints2,
         bool_sig=bool_sig,
+        cam_img = cam_img, # -> Device, gets random image and saves to file 
+        img_stats = img_stats,
+        cam_w_stats = cam_w_stats,
     )
 
 
