@@ -6,6 +6,8 @@ import functools
 
 import numpy as np
 
+import wrapt
+
 from .utils import (ReadOnlyError, LimitError)
 from .utils.epics_pvs import (waveform_to_string,
                               raise_if_disconnected, data_type, data_shape,
@@ -329,7 +331,7 @@ class DerivedSignal(Signal):
         yield from super()._repr_info()
         yield ('derived_from', self._derived_from)
 
-class ScpiBaseSignal(Signal):
+class ScpiSignalBase(Signal):
     '''A read-only SCPI signal -- that is, one without setters
 
     Keyword arguments are passed on to the base class (Signal) initializer
@@ -338,18 +340,22 @@ class ScpiBaseSignal(Signal):
     ----------
     scpi_cl : 
         The instrument control layer object which has write, ask, and a dictionary of commands (_cmds) 
-    name : str
+    cmd_name : str
         The name of the command to read from [_cmds]
+    name 
     configs : dict, optional 
         The configuration dictionary that is sent to get if its a long getter
 
     '''
-    def __init__(self, scpi_cl, cmd_name, *, 
+    def __init__(self, *, scpi_cl, cmd_name, name = None, 
                 precision = 7, configs = {}, dtype = 'number', 
                 shape = 1, **kwargs):
 
         cmd = scpi_cl._cmds[cmd_name]
-        self._read_name = cmd.name
+        if name == None:
+            self._read_name = cmd_name #cmd.name
+        else:
+            self._read_name = cmd_name
 
         self._scpi_cl = scpi_cl 
         super().__init__(name = self._read_name, **kwargs)
@@ -377,7 +383,14 @@ class ScpiBaseSignal(Signal):
         self.enum_strs = list(scpi_cl._cmds[cmd.name].lookup.keys())
 
         # setup the getter 
-        _get = functools.partial(scpi_cl.get, name = self._read_name, configs = configs)
+        if scpi_cl._cmds[cmd.name].returns_image:
+            @wrapt.decorator
+            def only_one_return(wrapped, instance, args, kwargs):
+                return wrapped(*args, **kwargs)[0]
+            t = only_one_return(scpi_cl.get)
+            _get = functools.partial(scpi_cl.get, name = self._read_name, configs = configs)
+        else:
+            _get = functools.partial(scpi_cl.get, name = self._read_name, configs = configs)
         self.get = _get
 
         # TODO -- better way to do this? 
@@ -436,7 +449,7 @@ class ScpiBaseSignal(Signal):
     #     return self.scpi_limits
 
 
-class ScpiSignal(ScpiBaseSignal):
+class ScpiSignal(ScpiSignalBase):
     '''A read-write SCPI signal -- that is, with a setter and a getter
 
     Keyword arguments are passed on to the base class (Signal) initializer
