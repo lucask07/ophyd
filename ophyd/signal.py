@@ -4,6 +4,9 @@ import time
 import threading
 import functools 
 
+# from sim.py (LJK)
+import uuid
+
 import numpy as np
 
 import wrapt
@@ -383,7 +386,7 @@ class ScpiSignalBase(Signal):
         self.enum_strs = list(scpi_cl._cmds[cmd.name].lookup.keys())
 
         # setup the getter 
-        if scpi_cl._cmds[cmd.name].returns_image:
+        if scpi_cl._cmds[cmd.name].returns_image: #TODO, am I actually using this? 
             @wrapt.decorator
             def only_one_return(wrapped, instance, args, kwargs):
                 return wrapped(*args, **kwargs)[0]
@@ -484,6 +487,134 @@ class ScpiSignal(ScpiSignalBase):
 
         return st
 
+
+class ScpiSignalFileSave(ScpiSignalBase):
+    """
+    A ScpiSignalBase (read-only) integrated with databroker.assets (LJK)
+
+    Parameters
+    ----------
+    func : callable, optional
+        This function sets the signal to a new value when it is triggered.
+        Expected signature: ``f() -> value``.
+        By default, triggering the signal does not change the value.
+    name : string, keyword only
+    parent : Device, optional
+        Used internally if this Signal is made part of a larger Device.
+    loop : asyncio.EventLoop, optional
+        used for ``subscribe`` updates; uses ``asyncio.get_event_loop()`` if
+        unspecified
+    save_path : str, optional
+        Path to save files to, if None make a temp dir, defaults to None.
+    save_func : function, optional
+        The function to save the data, function signature must be:
+        `func(file_path, array)`, defaults to np.save
+    save_spec : str, optional
+        The spec for the save function, defaults to 'RWFS_NPY'
+    save_ext : str, optional
+        The extension to add to the file name, defaults to '.npy'
+    precision : integer, optional
+        Precision that will be used when printing the file name
+    dtype : 'string', optional
+        The data-type for live display callbacks 
+    """
+
+    def __init__(self, *args, save_path=None,
+                 save_func=np.save, save_spec='NPY_SEQ', save_ext='npy',
+                 dtype = 'string', precision = 80,
+                 **kwargs):
+        super().__init__(*args, **kwargs)
+        self.save_func = save_func
+        self.save_ext = save_ext
+        self._resource_uid = None
+        self._datum_counter = None
+        self._asset_docs_cache = deque()
+        if save_path is None:
+            self.save_path = mkdtemp()
+        else:
+            self.save_path = save_path
+        self._spec = save_spec  # spec name stored in resource doc
+
+        self._file_stem = None
+        self._path_stem = None
+        self._result = {}
+        self._value = None # where we hold the image in memory so that a stats module 
+                           # can do calculations 
+        self.dtype = dtype
+        self.precision = precision
+
+    def stage(self):
+        self._resource_uid = new_uid()
+        # previous SynSignalWithRegistry used a full uid for the resource labeling and 
+        #  a separate short uid for the saved file; this is confusing -- use the uid for both 
+        self._file_stem = self._resource_uid 
+        self._path_stem = os.path.join(self.save_path, self._file_stem)
+        self._datum_counter = itertools.count()
+
+        resource = {'spec': self._spec,
+                    'root': self.save_path,
+                    'resource_path': self._file_stem,
+                    'resource_kwargs': {},
+                    'path_semantics': os.name}
+
+        resource['uid'] = self._resource_uid
+        self._asset_docs_cache.append(('resource', resource))
+
+    def trigger(self):
+        super().trigger()
+        # save file stash file name
+        self._result.clear()
+        for idx, (name, reading) in enumerate(super().read().items()):
+
+            datum_cnt = next(self._datum_counter)
+
+            # Save the actual reading['value'] to disk. For a real detector,
+            # this part would be done by the detector IOC, not by ophyd.
+            self.save_func('{}_{}_{}.{}'.format(self._path_stem, idx, datum_cnt,
+                                             self.save_ext), reading['value'])
+            datum = {'resource': self._resource_uid,
+                     'datum_kwargs': dict(index=idx)}
+
+            # We need to generate the datum_id.
+            datum_id = '{}/{}'.format(self._resource_uid,
+                                          datum_cnt)
+            datum['datum_id'] = datum_id
+            self._asset_docs_cache.append(('datum', datum))
+            # And now change the reading in place, replacing the value with
+            # a reference to Registry.
+            # but first store a copy of the "image"
+            self._value = reading['value']
+            reading['value'] = datum_id
+            self._result[name] = reading
+
+        return NullStatus()
+
+    def read(self):
+        # The "value" read is the filename; this filename will be put into the
+        # sqlite database generated by bluesky, but the entire "image" will not be
+        return self._result
+
+    def describe(self):
+        res = super().describe()
+        for key in res:
+            res[key]['external'] = "FILESTORE"
+            res[key]['dtype'] = self.dtype
+            res[key]['precision'] = self.precision
+        return res
+
+    def collect_asset_docs(self):
+        items = list(self._asset_docs_cache)
+        self._asset_docs_cache.clear()
+        for item in items:
+            yield item
+
+    def unstage(self):
+        self._resource_uid = None
+        self._datum_counter = None
+        self._asset_docs_cache.clear()
+        self._file_stem = None
+        self._path_stem = None
+        self._result.clear()
 
 
 class EpicsSignalBase(Signal):
