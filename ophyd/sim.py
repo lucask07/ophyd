@@ -101,6 +101,7 @@ class SynSignal(Signal):
         # There should be only one key here, but for the sake of generality....
         for k in res:
             res[k]['precision'] = self.precision
+
         return res
 
     def trigger(self):
@@ -419,7 +420,7 @@ class StatCalculator(SynSignal):
     ----------
     name : string
     img : Device
-        device that captures an image and stores it in memory to .value
+        device that captures an array and stores it in memory to .value
         as an np.array 
     signal_name : string 
         name of the signal where the value is stored (e.g 'cam_img')
@@ -433,16 +434,20 @@ class StatCalculator(SynSignal):
     img_stats_std = StatCalculator('camera_avg', img, 'cam_img', np.std)
     """
 
-    def __init__(self, name, img, signal_name, stat_func, **kwargs):
-
-        self._img = getattr(img, signal_name)
+    def __init__(self, name, stat_func, img = None, **kwargs):
+        self._img = img
 
         def func():
-            m = self._img.value # the actual numeric value of the image is "hidden",
-                                # not accessible by read()
-                                # since all we want the RE to see is the UID/filename
-            v = stat_func(m)
-            return v
+            if self._img is not None:
+                m = self._img.value        # the actual numeric value of the image is "hidden",
+                                           # not accessible by read()
+                                           # since all we want the RE to see is the UID/filename
+                if m is None:
+                    return None
+                else:
+                    return stat_func(m)
+            else:
+                return None
 
         super().__init__(func=func, name=name, **kwargs)
 
@@ -806,11 +811,15 @@ class SynSignalWithFileSave(SynSignal):
         The spec for the save function, defaults to 'RWFS_NPY'
     save_ext : str, optional
         The extension to add to the file name, defaults to '.npy'
-
+    precision : integer, optional
+        Precision that will be used when printing the file name
+    dtype : 'string', optional
+        The data-type for live display callbacks 
     """
 
     def __init__(self, *args, save_path=None,
                  save_func=np.save, save_spec='NPY_SEQ', save_ext='npy',
+                 dtype = 'string', precision = 80,
                  **kwargs):
         super().__init__(*args, **kwargs)
         self.save_func = save_func
@@ -829,6 +838,8 @@ class SynSignalWithFileSave(SynSignal):
         self._result = {}
         self._value = None # where we hold the image in memory so that a stats module 
                            # can do calculations 
+        self.dtype = dtype
+        self.precision = precision
 
     def stage(self):
         self._resource_uid = new_uid()
@@ -885,6 +896,8 @@ class SynSignalWithFileSave(SynSignal):
         res = super().describe()
         for key in res:
             res[key]['external'] = "FILESTORE"
+            res[key]['dtype'] = self.dtype
+            res[key]['precision'] = self.precision
         return res
 
     def collect_asset_docs(self):
@@ -1158,6 +1171,7 @@ class Camera(Device):
                             save_path = '/Users/koer2434/Google Drive/UST/research/bluesky/data',
                             kind = Kind.normal)
 
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.read_attrs = ['img']
@@ -1168,16 +1182,38 @@ class Camera(Device):
     def trigger(self):
         return self.img.trigger() 
 
-'''
 # TODO: How to make a device that includes Devices? 
-#       this runs but the only component is that of img_stats 
-#       the cam is not included in bluesky info 
-#       nor is it triggered 
-'''
+
 class CameraWithStats(Device):
-    cam = Camera(name = 'cam')
-    img_stats = Component(StatCalculator, name = 'camera_sum', img = cam, 
-        signal_name = 'img', stat_func = np.sum, kind=Kind.hinted)
+
+    img = Component(SynSignalWithFileSave, func=lambda: np.array(np.random.random(10)),
+                            name='img', 
+                            save_path = '/Users/koer2434/Google Drive/UST/research/bluesky/data',
+                            kind = Kind.hinted,
+                            precision = 10) # this won't print the full file name, but enough to be unique
+    # Stats on the image 
+    isum = Component(StatCalculator, name = 'sum', img = None, 
+        stat_func = np.sum, kind=Kind.hinted)
+    istd = Component(StatCalculator, name = 'std', img = None, 
+        stat_func = np.std, kind=Kind.hinted)
+    imax = Component(StatCalculator, name = 'max', img = None, 
+        stat_func = np.max, kind=Kind.hinted)
+    imin = Component(StatCalculator, name = 'min', img = None, 
+        stat_func = np.min, kind=Kind.hinted)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        self.isum._img = self.img
+        self.istd._img = self.img
+        self.imax._img = self.img
+        self.imin._img = self.img
+
+
+    def trigger(self):
+        self.img.trigger() 
+        return (self.isum.trigger() & self.istd.trigger() & self.imin.trigger() & self.imax.trigger())
+
 
 def hw():
     "Build a set of synthetic hardware (hence the abbreviated name, hw)"
@@ -1235,10 +1271,10 @@ def hw():
     motor_no_hints1 = SynAxisNoHints(name='motor1', labels={'motors'})
     motor_no_hints2 = SynAxisNoHints(name='motor2', labels={'motors'})
 
-    cam_img = Camera(name = 'cam') # this is a device
-    img_stats = StatCalculator('camera_sum', cam_img, 'img', np.sum)
+    # cam_img = Camera(name = 'cam') # this is a device
+    # img_stats = StatCalculator('camera_sum', cam_img, 'img', np.sum)
 
-    cam_w_stats = CameraWithStats(name = 'cam_w_stats')
+    cam = CameraWithStats(name = 'cam')
 
     # Because some of these reference one another we must define them (above)
     # before we pack them into a namespace (below).
@@ -1277,9 +1313,7 @@ def hw():
         motor_no_hints1=motor_no_hints1,
         motor_no_hints2=motor_no_hints2,
         bool_sig=bool_sig,
-        cam_img = cam_img, # -> Device, gets random image and saves to file 
-        img_stats = img_stats,
-        cam_w_stats = cam_w_stats,
+        cam = cam,
     )
 
 
