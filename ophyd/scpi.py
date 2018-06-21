@@ -80,6 +80,7 @@ class ScpiSignalBase(Signal):
         self.dtype = dtype
         self.shape = shape
         self.delay = None
+        self.help = scpi_cl.help
 
         # TODO: limits 
         # if scpi_cl._cmds[cmd_name].limits is not None:
@@ -141,7 +142,6 @@ class ScpiSignalBase(Signal):
     def _repr_info(self):
         yield ('read_name', self._read_name)
         yield from super()._repr_info()
-
 
     def describe(self):
         """Return the description as a dictionary
@@ -377,7 +377,7 @@ class StatCalculator(SynSignal):
             if self._img is not None:
                 m = self._img.value        # the actual numeric value of the image is "hidden",
                                            # not accessible by read()
-                                           # since all we want the RE to see is the UID/filename
+                                           # since all we want the bluesky RE to see is the UID/filename
                 if m is None:
                     return None
                 else:
@@ -386,12 +386,3 @@ class StatCalculator(SynSignal):
                 return None
 
         super().__init__(func=func, name=name, **kwargs)
-
-# class ArrayAttributeSignal(AttributeSignal):
-#     '''An AttributeSignal which is cast to an ndarray on get
-
-#     This is used where data_type and data_shape may otherwise fail to determine
-#     how to store the data into metadatastore.
-#     '''
-#     def get(self, **kwargs):
-#         return np.asarray(super().get(**kwargs))
