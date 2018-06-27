@@ -12,14 +12,8 @@ import numpy as np
 
 import wrapt
 
-from .utils import (ReadOnlyError, LimitError)
-from .utils.epics_pvs import (waveform_to_string,
-                              raise_if_disconnected, data_type, data_shape,
-                              AlarmStatus, AlarmSeverity, validate_pv_name)
-from .ophydobj import OphydObject, Kind
-from .status import Status, DeviceStatus, StatusBase
-from .utils import set_and_wait
-from . import get_cl
+
+from .status import Status, StatusBase
 from .signal import Signal
 from .sim import SynSignal
 
@@ -60,19 +54,18 @@ class ScpiSignalBase(Signal):
         The configuration dictionary that is sent to get if its a long getter
 
     '''
-    def __init__(self, *, scpi_cl, cmd_name, name = None, 
-                precision = 7, configs = {}, dtype = 'number', 
-                shape = 1, status_monitor = None, 
-                **kwargs):
+    def __init__(self, *, scpi_cl, cmd_name, name = None,
+                 precision = 7, configs = {}, dtype = 'number',
+                 shape = 1, status_monitor = None,
+                 **kwargs):
 
         cmd = scpi_cl._cmds[cmd_name]
-        if name == None:
-            self._read_name = cmd_name #cmd.name
-        else:
-            self._read_name = cmd_name
 
         self._scpi_cl = scpi_cl 
-        super().__init__(name = self._read_name, **kwargs)
+        # print('name = {}'.format(scpi_cl.name + ':' + cmd_name))
+        composite_name = scpi_cl.name + '_' + cmd_name
+        super().__init__(name = composite_name, **kwargs)
+        self._read_name = composite_name
         self.lookup = cmd.lookup
         self.is_config = cmd.is_config
         self.precision = precision
@@ -80,7 +73,6 @@ class ScpiSignalBase(Signal):
         self.dtype = dtype
         self.shape = shape
         self.delay = None
-        self.help = scpi_cl.help
 
         # TODO: limits 
         # if scpi_cl._cmds[cmd_name].limits is not None:
@@ -103,14 +95,14 @@ class ScpiSignalBase(Signal):
             def only_one_return(wrapped, instance, args, kwargs):
                 return wrapped(*args, **kwargs)[0]
             t = only_one_return(scpi_cl.get)
-            _get = functools.partial(scpi_cl.get, name = self._read_name, configs = configs)
+            _get = functools.partial(scpi_cl.get, name=cmd.name, configs=configs)
         else:
-            _get = functools.partial(scpi_cl.get, name = self._read_name, configs = configs)
+            _get = functools.partial(scpi_cl.get, name=cmd.name, configs=configs)
         self.get = _get
 
         # TODO -- better way to do this? 
         # setup the setter in case this signal is a setter (will be converted to self.set in the subclass)
-        self._set = functools.partial(scpi_cl.set, name = self._read_name, configs = configs)
+        self._set = functools.partial(scpi_cl.set, name=cmd.name, configs=configs)
 
         self._status_monitor = status_monitor 
         if status_monitor is not None:
@@ -120,19 +112,19 @@ class ScpiSignalBase(Signal):
                         configs = status_monitor['trig_configs'])
 
             self._trigger_func = trig_func
-            self._status_read = functools.partial(scpi_cl.get, name = status_monitor['name'], 
+            self._status_read = functools.partial(scpi_cl.get, name=status_monitor['name'],
                 configs = status_monitor['configs'])
             self._threshold_function = status_monitor['threshold_function']
             self._threshold_level = status_monitor['threshold_level']
             self._poll_time = status_monitor['poll_time']
-            self._post_status = functools.partial(scpi_cl.set, name = status_monitor['post_name'], 
+            self._post_status = functools.partial(scpi_cl.set, name=status_monitor['post_name'],
                 configs = status_monitor['post_configs'])
 
     def trigger(self):
         # first wait until another signal is ready, i.e. a count of readings in a buffer 
         if self._status_monitor is not None:
             self._trigger_func()
-            while not (self._threshold_function(self._status_read(), self._threshold_level) ):
+            while not (self._threshold_function(self._status_read(), self._threshold_level)):
                 time.sleep(self._poll_time)
             self._post_status(None)
         # now trigger 
@@ -151,7 +143,7 @@ class ScpiSignalBase(Signal):
         dict
             Dictionary of name and formatted description string
         """
-        desc = {'source': '{}:{}'.format(self._scpi_cl.nickname, self._read_name), }
+        desc = {'source': '{}:{}'.format(self._scpi_cl.name, self._read_name), }
 
         val = self.value
         desc['dtype'] = self.dtype
@@ -223,6 +215,161 @@ class ScpiSignal(ScpiSignalBase):
             check_return(ret)
 
         return st
+
+
+class ScpiCompositeBase(Signal):
+    '''A read-only SCPI signal that originates from a composite function of multiple SCPI actions
+
+    Keyword arguments are passed on to the base class (Signal) initializer
+
+    Parameters
+    ----------
+    get_func :
+        The command to read a value
+    name : str
+        The name of the command
+    configs : dict, optional
+        The configuration dictionary that is sent to get if its a long getter
+
+    '''
+    def __init__(self, *, get_func, name,
+                precision = 7, configs = {}, dtype = 'number',
+                shape = 1, status_monitor = None,
+                **kwargs):
+
+        self._read_name = name
+        super().__init__(name = self._read_name, **kwargs)
+
+        self.is_config = False
+        self.precision = precision
+        self.dtype = dtype
+        self.shape = shape
+        self.delay = None
+
+        # TODO: limits
+        # if scpi_cl._cmds[cmd_name].limits is not None:
+        #     self.scpi_limits = tuple(scpi_cl._cmds[cmd_name].limits)
+        # else:
+        #     self.scpi_limits = self.limits
+
+        # TODO: Instrbuilder will use a list of "limits"
+        #       in this case (when len(limits) > 2 or type(limits) is Str)
+        #       the value set has to be a member of this list.
+        #       Does this break bluesky?
+
+        # TODO: my assumption is that the ophyd 'enum_strs' is the same as the
+        #       instrabuilder lookup tables. Confirm this is correct.
+        # self.enum_strs = list(scpi_cl._cmds[cmd.name].lookup.keys())
+
+        self._get = get_func
+        self.get = self._get
+
+        # TODO -- better way to do this?
+        # setup the setter in case this signal is a setter (will be converted to self.set in the subclass)
+
+        self._status_monitor = status_monitor
+        if status_monitor is not None:
+            print('Status monitor is not implemented for SCPI overrides')
+
+    def trigger(self):
+        super().trigger()
+        return NullStatus()
+
+    def _repr_info(self):
+        yield ('read_name', self._read_name)
+        yield from super()._repr_info()
+
+    def describe(self):
+        """Return the description as a dictionary
+
+        Returns
+        -------
+        dict
+            Dictionary of name and formatted description string
+        """
+        desc = {'source': '{}:{}'.format(self._scpi_cl.name, self._read_name), }
+
+        val = self.value
+        desc['dtype'] = self.dtype
+        desc['shape'] = self.shape
+
+        try:
+            desc['precision'] = int(self.precision)
+        except (ValueError, TypeError):
+            pass
+
+        low_limit, high_limit = self.limits
+        desc['lower_ctrl_limit'] = low_limit
+        desc['upper_ctrl_limit'] = high_limit
+
+        if self.enum_strs:
+            desc['enum_strs'] = self.enum_strs
+
+        return {self.name: desc}
+
+    def read(self):
+        """Read the signal and format for data collection
+
+        Returns
+        -------
+        dict
+            Dictionary of value timestamp pairs
+        """
+
+        return {self.name: {'value': self.value,
+                            'timestamp': self.timestamp}}
+
+    # TODO: limits
+    # @property
+    # def limits(self):
+    #     return self.scpi_limits
+
+
+class ScpiCompositeSignal(ScpiCompositeBase):
+    '''A read-write SCPI signal that originates from a composite function of multiple SCPI actions
+
+    Keyword arguments are passed on to the base class (Signal) initializer
+
+    Parameters
+    ----------
+    get_func :
+        The command to read a value
+    name : str
+        The name of the command
+    set_func:
+        The command for setting
+    configs : dict, optional
+        The configuration dictionary that is sent to get if its a long getter
+    '''
+
+    def __init__(self, *, get_func, name, set_func,
+                precision = 7, configs = {}, dtype = 'number',
+                shape = 1, status_monitor = None,
+                **kwargs):
+        self._set = set_func
+        super().__init__(get_func=get_func, name=name, configs=configs)
+
+    def set(self, value):
+        st = Status()
+
+        def check_return(ret):
+            if ret[0]:
+                st._finished()
+
+        if self.delay:
+            def sleep_and_finish():
+                time.sleep(self.delay) # in sim.py time is imported as ttime, not sure why
+                ret = self._set(value)
+                check_return(ret)
+
+            threading.Thread(target=sleep_and_finish, daemon=True).start()
+
+        else:
+            ret = self._set(value)
+            check_return(ret)
+
+        return st
+
 
 
 class ScpiSignalFileSave(ScpiSignalBase):
@@ -301,16 +448,16 @@ class ScpiSignalFileSave(ScpiSignalBase):
 
             datum_cnt = next(self._datum_counter)
 
-            # Save the actual reading['value'] to disk. For a real detector,
-            # this part would be done by the detector IOC, not by ophyd.
+            # Save the actual reading['value'] to disk. 
+            # Instrbuilder pulls the value into memory, ophyd saves it to disk
             self.save_func('{}_{}_{}.{}'.format(self._path_stem, idx, datum_cnt,
                                              self.save_ext), reading['value'])
             datum = {'resource': self._resource_uid,
                      'datum_kwargs': dict(index=idx)}
 
             # We need to generate the datum_id.
-            datum_id = '{}/{}'.format(self._resource_uid,
-                                          datum_cnt)
+            datum_id = '{}_{}_{}.{}'.format(self._resource_uid, idx,
+                                          datum_cnt, self.save_ext)
             datum['datum_id'] = datum_id
             self._asset_docs_cache.append(('datum', datum))
             # And now change the reading in place, replacing the value with
@@ -326,6 +473,9 @@ class ScpiSignalFileSave(ScpiSignalBase):
         # The "value" read is the filename; this filename will be put into the
         # sqlite database generated by bluesky, but the entire "image" will not be
         return self._result
+
+    def report_array(self):
+        return self._value
 
     def describe(self):
         res = super().describe()
@@ -358,7 +508,7 @@ class StatCalculator(SynSignal):
     ----------
     name : string
     img : Device
-        device that captures an array and stores it in memory to .value
+        device that captures an array and stores it in memory to ._value
         as an np.array 
     signal_name : string 
         name of the signal where the value is stored (e.g 'cam_img')
@@ -375,7 +525,7 @@ class StatCalculator(SynSignal):
 
         def func():
             if self._img is not None:
-                m = self._img.value        # the actual numeric value of the image is "hidden",
+                m = self._img()        # the actual numeric value of the image is "hidden",
                                            # not accessible by read()
                                            # since all we want the bluesky RE to see is the UID/filename
                 if m is None:
