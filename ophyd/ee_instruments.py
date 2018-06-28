@@ -27,16 +27,38 @@ from ophyd.scpi import ScpiSignal, ScpiSignalBase, ScpiSignalFileSave, StatCalcu
 from ophyd import Device, Component, Signal
 from ophyd.device import Kind
 
-# ------------------------------------------------------------
-#					Lock-in Amplifier
-# ------------------------------------------------------------
 
 class ManualDevice(Device):
     val = Component(Signal, name='val')
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-class LockInAuto(Device):
+
+class BasicStatistics(Device):
+    func_list = [np.sum, np.mean, np.std, np.min, np.max, len]
+    components = {}
+
+    for func in func_list:
+        func_name = func.__name__
+        components[func_name] = Component(StatCalculator, name=func_name, img=None,
+                                          stat_func=func, kind=Kind.hinted)
+
+    locals().update(components)
+
+    def __init__(self, array_source, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for func in self.func_list:
+            getattr(self, func.__name__)._img = array_source.get_array
+            # update the name
+            getattr(self, func.__name__).name = array_source.name + getattr(self, func.__name__).name
+
+# ------------------------------------------------------------
+# 					Lock-in Amplifier
+# ------------------------------------------------------------
+
+
+class LockIn(Device):
     components = {}
     for cmd_key, cmd in scpi_lia._cmds.items():
         if cmd.is_config:
@@ -58,11 +80,11 @@ class LockInAuto(Device):
                                       'post_name': 'pause_scan',
                                       'post_configs': {}}
                     components[cmd.name] = Component(ScpiSignalFileSave, name=cmd.name,
-                                            scpi_cl=scpi_lia, cmd_name=cmd.name,
-                                            save_path = data_save.directory,
-                                            kind = Kind.normal,
-                                            precision = 10, # this precision won't print the full file name, but enough to be unique
-                                            configs = {'start_pt': 0, 'num_pts' : 80},
+                                                     scpi_cl=scpi_lia, cmd_name=cmd.name,
+                                                     save_path = data_save.directory,
+                                                     kind = Kind.normal,
+                                                     precision = 10, # precision sets length printed in live table
+                                                     configs = {'start_pt': 0, 'num_pts': 80},
                                                      status_monitor=status_monitor)
                 else:
                     print('Skipping LockIn command {}. Returns an array but a status monitor dictionary is not prepared'.format(cmd.name))
@@ -73,34 +95,27 @@ class LockInAuto(Device):
                                                  configs={}, kind=comp_kind)
             if (not cmd.setter) and cmd.getter_inputs == 0:
                 components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi_lia, cmd_name=cmd.name,
-                                                  configs={}, kind=comp_kind)
+                                                 configs={}, kind=comp_kind)
 
     # Other commands need to be explicitly entered
-    #  statistics calculated on the array
-    isum = Component(StatCalculator, name='lia:sum_read_buffer', img=None,
-                     stat_func=np.sum, kind=Kind.hinted)
-    istd = Component(StatCalculator, name='lia:std_read_buffer', img=None,
-                     stat_func=np.std, kind=Kind.hinted)
-    iavg = Component(StatCalculator, name='lia:avg_read_buffer', img=None,
-                     stat_func=np.mean, kind=Kind.hinted)
-
     # Long setters (SCPI commands that takes more than a single value)
 
     off_exp = Component(ScpiSignal,
-       scpi_cl=scpi_lia, cmd_name='off_exp', configs={'chan':
-                                                          2})  # offset and expand
+                        scpi_cl=scpi_lia, cmd_name='off_exp',
+                        configs={'chan': 2})  # offset and expand
 
     ch1_disp = Component(ScpiSignal,
-        scpi_cl=scpi_lia, cmd_name='ch1_disp', configs={'ratio':
-                                                           0})  # ratio the display to None (0), Aux1 (1) or Aux2 (2)
+                         scpi_cl=scpi_lia, cmd_name='ch1_disp',
+                         configs={'ratio': 0})  # ratio the display to None (0), Aux1 (1) or Aux2 (2)
 
     test_composite = Component(ScpiCompositeBase,
                                get_func=scpi_lia.test_composite_get,
                                name='fg:f_mult_and_get')
+
     composite_set = Component(ScpiCompositeSignal,
-                               get_func=None,
-                               set_func = scpi_lia.test_composite_set,
-                               name='fg:freq_tau_sens')
+                              get_func=None,
+                              set_func = scpi_lia.test_composite_set,
+                              name='fg:freq_tau_sens')
 
     unconnected = scpi_lia.unconnected
 
@@ -108,22 +123,18 @@ class LockInAuto(Device):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # TODO: Awkward, find better way attach statistics to the read_buffer command
-        self.isum._img = self.read_buffer.report_array
-        self.istd._img = self.read_buffer.report_array
-        self.iavg._img = self.read_buffer.report_array
-
-    def help(self):
         self.help = scpi_lia.help
-
-    def help_all(self):
-        self.help_all = scpi_lia.help_all()
+        self.help_all = scpi_lia.help_all
 
     def stage(self):
         super().stage()
 
 
-class FunctionGenAuto(Device):
+# ------------------------------------------------------------
+# 					Function Generator
+# ------------------------------------------------------------
+
+class FunctionGen(Device):
     components = {}
     for cmd_key, cmd in scpi_fg._cmds.items():
         if cmd.is_config:
@@ -146,21 +157,22 @@ class FunctionGenAuto(Device):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-    def help(self):
         self.help = scpi_fg.help
-
-    def help_all(self):
-        self.help_all = scpi_fg.help_all()
+        self.help_all = scpi_fg.help_all
 
     def stage(self):
+        # TODO: this is too specific
         self.load.set('INF')
         self.output.set('ON')
         super().stage()
 
 
+# ------------------------------------------------------------
+# 					Digital Multimeter
+# ------------------------------------------------------------
 
-class MultiMeterAuto(Device):
+
+class MultiMeter(Device):
     components = {}
     for cmd_key, cmd in scpi_dmm._cmds.items():
         if cmd.is_config:
@@ -172,11 +184,11 @@ class MultiMeterAuto(Device):
             if cmd.name == 'burst_volt':
                 components[cmd.name] = Component(ScpiSignalFileSave, name=cmd.name,
                         scpi_cl=scpi_dmm, cmd_name=cmd.name,
-                        save_path = data_save.directory,
-                        kind = Kind.normal,
-                        precision = 10, # this precision won't print the full file name, but enough to be unique
-                        configs = {'reads_per_trigger': 1, 'aperture' : 200e-6,
-                                 'trig_source':'EXT', 'trig_count': 1024})
+                        save_path=data_save.directory,
+                        kind=Kind.normal,
+                        precision=10, # this precision won't print the full file name, but enough to be unique
+                        configs={'reads_per_trigger': 1, 'aperture': 200e-6,
+                                 'trig_source': 'EXT', 'trig_count': 1024})
             elif cmd.getter_type.returns_array:
                 print('Skipping FunctionGen command {}. Returns an array but a status monitor dictionary is not prepared'.format(cmd.name))
         else:
@@ -203,24 +215,10 @@ class MultiMeterAuto(Device):
                 components[cmd.name + '_ac'] = Component(ScpiSignalBase, scpi_cl=scpi_dmm, cmd_name=cmd.name,
                                                  configs={'ac_dc': 'AC'}, kind=comp_kind)
 
-    isum = Component(StatCalculator, name='sum', img=None,
-                     stat_func=np.sum, kind=Kind.hinted)
-    istd = Component(StatCalculator, name='std', img=None,
-                     stat_func=np.std, kind=Kind.hinted)
-
     unconnected = scpi_dmm.unconnected
     locals().update(components)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # TODO: Awkward, find better way attach statistics to commands
-        
-        
-        #self.isum._img = self.burst_volt.report_array
-        #self.istd._img = self.burst_volt.report_array
-
-    def help(self):
         self.help = scpi_dmm.help
-
-    def help_all(self):
-        self.help_all = scpi_dmm.help_all()
+        self.help_all = scpi_dmm.help_all
