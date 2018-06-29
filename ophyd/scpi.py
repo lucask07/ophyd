@@ -502,7 +502,7 @@ class ScpiSignalFileSave(ScpiSignalBase):
 class StatCalculator(SynSignal):
     """
     Evaluate a statistic from a Device that produces a 1D or 2D np.array
-        (e.g. an imaging detector) [dervied from SynGauss]
+        (e.g. an imaging detector) [derived from SynGauss]
 
     Parameters
     ----------
