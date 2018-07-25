@@ -64,7 +64,7 @@ class ScpiSignalBase(Signal):
         self._scpi_cl = scpi_cl 
         # print('name = {}'.format(scpi_cl.name + ':' + cmd_name))
         composite_name = scpi_cl.name + '_' + cmd_name
-        super().__init__(name = composite_name, **kwargs)
+        super().__init__(name=composite_name, **kwargs)
         self._read_name = composite_name
         self.lookup = cmd.lookup
         self.is_config = cmd.is_config
@@ -94,7 +94,6 @@ class ScpiSignalBase(Signal):
             @wrapt.decorator
             def only_one_return(wrapped, instance, args, kwargs):
                 return wrapped(*args, **kwargs)[0]
-            t = only_one_return(scpi_cl.get)
             _get = functools.partial(scpi_cl.get, name=cmd.name, configs=configs)
         else:
             _get = functools.partial(scpi_cl.get, name=cmd.name, configs=configs)
@@ -121,13 +120,13 @@ class ScpiSignalBase(Signal):
                 configs = status_monitor['post_configs'])
 
     def trigger(self):
-        # first wait until another signal is ready, i.e. a count of readings in a buffer 
+        # first wait until another signal is ready, i.e. a count of readings in a buffer
         if self._status_monitor is not None:
             self._trigger_func()
             while not (self._threshold_function(self._status_read(), self._threshold_level)):
                 time.sleep(self._poll_time)
             self._post_status(None)
-        # now trigger 
+        # now trigger
         super().trigger()
         return NullStatus()
 
@@ -145,7 +144,6 @@ class ScpiSignalBase(Signal):
         """
         desc = {'source': '{}:{}'.format(self._scpi_cl.name, self._read_name), }
 
-        val = self.value
         desc['dtype'] = self.dtype
         desc['shape'] = self.shape
 
@@ -204,14 +202,14 @@ class ScpiSignal(ScpiSignalBase):
 
         if self.delay:
             def sleep_and_finish():
-                time.sleep(self.delay) # in sim.py time is imported as ttime, not sure why 
-                ret = self._set(value)
+                ret = self._set(value=value)
+                time.sleep(self.delay)  # in sim.py time is imported as ttime, not sure why
                 check_return(ret)
 
             threading.Thread(target=sleep_and_finish, daemon=True).start()
 
         else:
-            ret = self._set(value)
+            ret = self._set(value=value)
             check_return(ret)
 
         return st
@@ -316,7 +314,7 @@ class ScpiCompositeBase(Signal):
             Dictionary of value timestamp pairs
         """
 
-        return {self.name: {'value': self.value,
+        return {self.name: {'value': self.get(),
                             'timestamp': self.timestamp}}
 
     # TODO: limits
@@ -359,17 +357,16 @@ class ScpiCompositeSignal(ScpiCompositeBase):
         if self.delay:
             def sleep_and_finish():
                 time.sleep(self.delay) # in sim.py time is imported as ttime, not sure why
-                ret = self._set(value)
+                ret = self._set(value=value)
                 check_return(ret)
 
             threading.Thread(target=sleep_and_finish, daemon=True).start()
 
         else:
-            ret = self._set(value)
+            ret = self._set(value=value)
             check_return(ret)
 
         return st
-
 
 
 class ScpiSignalFileSave(ScpiSignalBase):
