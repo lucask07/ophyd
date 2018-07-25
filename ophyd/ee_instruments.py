@@ -6,13 +6,8 @@
 # standard library imports 
 import sys
 import numpy as np
-
-'''
-Big issue on the June 15.
-If a component is hinted it will be read at the start of the scan for metadata. 
-This doesn't trigger the signal 
-so if it needs to be triggered be careful
-'''
+import scipy.signal as signal
+import functools
 
 # use symbolic links
 sys.path.append(
@@ -22,10 +17,43 @@ sys.path.append(
 
 
 # imports that require sys.path.append pointers
-from instrbuilder.setup import scpi_lia, scpi_fg, scpi_dmm, scpi_osc, data_save
+
+from instrbuilder.setup import scpi_lia, scpi_fg, scpi_fg2, scpi_dmm, scpi_osc, data_save
+
 from ophyd.scpi import ScpiSignal, ScpiSignalBase, ScpiSignalFileSave, StatCalculator, ScpiCompositeBase, ScpiCompositeSignal
 from ophyd import Device, Component, Signal
 from ophyd.device import Kind
+from instrbuilder.scpi import SCPI
+
+class BlankCommHandle():
+    def __init__(self):
+        self.write = None
+        self.ask = None
+
+bch = BlankCommHandle()
+scpi = SCPI([], bch)
+
+
+def create_filter(order, sample_rate, tau):
+    cutoff_freq = 1 / (2 * np.pi * tau)
+    norm_cutoff_freq = cutoff_freq / (sample_rate / 2)  # [from 0 - 1]
+
+    num, denom = signal.iirfilter(N=order, Wn=norm_cutoff_freq,
+                                  rp=None, rs=None, btype='lowpass', analog=False,
+                                  ftype='butter', output='ba')
+    return num, denom
+
+
+def apply_filter(arr, num, denom, sample_rate, tau):
+    output_signal = signal.filtfilt(num, denom, arr)
+
+    tau_settle = 5
+    settle_idx = int(tau_settle * tau / (1 / sample_rate))
+    decimate_length = int(tau / (1 / sample_rate))
+
+    arr_downsample = output_signal[settle_idx::decimate_length]
+
+    return arr_downsample[0]
 
 
 class ManualDevice(Device):
@@ -52,6 +80,43 @@ class BasicStatistics(Device):
             getattr(self, func.__name__)._img = array_source.get_array
             # update the name
             getattr(self, func.__name__).name = array_source.name + getattr(self, func.__name__).name
+
+
+class FilterStatistics(Device):
+
+    # TODO: How to not re-run the filter for each statistic, maybe by re-assigning _img below
+    components = {}
+
+    # use functools.partial to input all parameters but the data array
+    #   generate the filter numerator and denominator here
+
+    order = 1  # db/octave = order*6dB
+    sample_rate = 1220.680518480077 * 8  # 5e6/512/8*8 Hz
+    print('Sample rate = {} [Hz]'.format(sample_rate))
+    tau = 30e-3
+
+    num, denom = create_filter(order=order, sample_rate=sample_rate, tau=tau)
+    func_name = 'filter_6dB'
+    func = functools.partial(apply_filter, num=num, denom=denom, sample_rate=sample_rate, tau=tau)
+    components[func_name] = Component(StatCalculator, name=func, img=None,
+                                      stat_func=func, kind=Kind.hinted)
+
+    order = 4  # db/octave = order*24dB
+    num, denom = create_filter(order=order, sample_rate=sample_rate, tau=tau)
+    func_name = 'filter_24dB'
+    func = functools.partial(apply_filter, num=num, denom=denom, sample_rate=sample_rate, tau=tau)
+    components[func_name] = Component(StatCalculator, name=func, img=None,
+                                      stat_func=func, kind=Kind.hinted)
+
+    locals().update(components)
+
+    def __init__(self, array_source, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for func in self.func_list:
+            getattr(self, func.__name__)._img = array_source.get_array
+            # update the name
+            getattr(self, func.__name__).name = array_source.name + getattr(self, func.__name__).name
+
 
 # ------------------------------------------------------------
 # 					Lock-in Amplifier
@@ -98,7 +163,7 @@ class LockIn(Device):
                                                  configs={}, kind=comp_kind)
 
     # Other commands need to be explicitly entered
-    # Long setters (SCPI commands that takes more than a single value)
+    # Long setters (i.e. SCPI commands that takes more than a single value)
 
     off_exp = Component(ScpiSignal,
                         scpi_cl=scpi_lia, cmd_name='off_exp',
@@ -107,15 +172,6 @@ class LockIn(Device):
     ch1_disp = Component(ScpiSignal,
                          scpi_cl=scpi_lia, cmd_name='ch1_disp',
                          configs={'ratio': 0})  # ratio the display to None (0), Aux1 (1) or Aux2 (2)
-
-    test_composite = Component(ScpiCompositeBase,
-                               get_func=scpi_lia.test_composite_get,
-                               name='fg:f_mult_and_get')
-
-    composite_set = Component(ScpiCompositeSignal,
-                              get_func=None,
-                              set_func = scpi_lia.test_composite_set,
-                              name='fg:freq_tau_sens')
 
     unconnected = scpi_lia.unconnected
 
@@ -133,6 +189,7 @@ class LockIn(Device):
 # ------------------------------------------------------------
 # 					Function Generator
 # ------------------------------------------------------------
+
 
 class FunctionGen(Device):
     components = {}
@@ -167,13 +224,90 @@ class FunctionGen(Device):
         super().stage()
 
 # ------------------------------------------------------------
-# 					Oscilloscope
+# 					Function Generator
 # ------------------------------------------------------------
 
 
+class FunctionGen2(Device):
+    components = {}
+    for cmd_key, cmd in scpi_fg2._cmds.items():
+        if cmd.is_config:
+            comp_kind = Kind.config
+        else:
+            comp_kind = Kind.normal
+
+        if hasattr(cmd.getter_type, 'returns_array'):
+            if cmd.getter_type.returns_array:
+                print('Skipping FunctionGen command {}. Returns an array but a status monitor dictionary is not prepared'.format(cmd.name))
+        else:
+            if cmd.setter and cmd.getter_inputs == 0 and cmd.setter_inputs < 2:
+                components[cmd.name] = Component(ScpiSignal, scpi_cl=scpi_fg2, cmd_name=cmd.name,
+                                                 configs={}, kind=comp_kind)
+            if (not cmd.setter) and cmd.getter_inputs == 0:
+                components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi_fg2, cmd_name=cmd.name,
+                                                 configs={}, kind=comp_kind)
+    unconnected = scpi_fg2.unconnected
+    locals().update(components)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.help = scpi_fg2.help
+        self.help_all = scpi_fg2.help_all
+
+    def stage(self):
+        # TODO: this is too specific
+        self.load.set('INF')
+        self.output.set('ON')
+        super().stage()
+
+# ------------------------------------------------------------
+# 					Function Generator (using __init_subclass__)
+# ------------------------------------------------------------
+
+"""
+class EEInstrument():
+    pass
+
+
+class FunctionGen():
+    print('here')
+    def __init_subclass__(cls, scpi, **kwargs):
+        # super().__init_subclass__(**kwargs)
+        print('here2')
+        components = {}
+        for cmd_key, cmd in scpi._cmds.items():
+            if cmd.is_config:
+                comp_kind = Kind.config
+            else:
+                comp_kind = Kind.normal
+
+            if hasattr(cmd.getter_type, 'returns_array'):
+                if cmd.getter_type.returns_array:
+                    print('Skipping FunctionGen command {}. Returns an array but a status monitor dictionary is not prepared'.format(cmd.name))
+            else:
+                if cmd.setter and cmd.getter_inputs == 0 and cmd.setter_inputs < 2:
+                    components[cmd.name] = Component(ScpiSignal, scpi_cl=scpi, cmd_name=cmd.name,
+                                                     configs={}, kind=comp_kind)
+                if (not cmd.setter) and cmd.getter_inputs == 0:
+                    components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi, cmd_name=cmd.name,
+                                                     configs={}, kind=comp_kind)
+        cls.unconnected = scpi.unconnected
+        locals().update(components)
+
+        cls.help = scpi.help
+        cls.help_all = scpi.help_all
+
+#    def __init__(self, *args, **kwargs):
+#        super().__init__(*args, **kwargs)
+"""
+
+# ------------------------------------------------------------
+# 					Oscilloscope
+# ------------------------------------------------------------
+
 class Oscilloscope(Device):
     components = {}
-    channels = [1,2]
+    channels = [1, 2]
     for cmd_key, cmd in scpi_osc._cmds.items():
         if cmd.is_config:
             comp_kind = Kind.config
@@ -216,6 +350,9 @@ class Oscilloscope(Device):
                 components[cmd.name + '_chan{}'.format(channel)] = Component(ScpiSignalBase, scpi_cl=scpi_osc, cmd_name=cmd.name,
                                                  configs={'channel': channel}, kind=comp_kind)
 
+        if cmd.name == 'meas_phase':  # requires two channels to find phase difference
+            components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi_osc, cmd_name=cmd.name,
+                                             configs={'chan1':1, 'chan2':2}, kind=comp_kind)
 
     unconnected = scpi_osc.unconnected
     locals().update(components)
