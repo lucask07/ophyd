@@ -169,7 +169,6 @@ class ScpiSignalBase(Signal):
         dict
             Dictionary of value timestamp pairs
         """
-
         return {self.name: {'value': self.value,
                             'timestamp': self.timestamp}}
 
