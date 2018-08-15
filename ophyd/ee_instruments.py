@@ -17,10 +17,8 @@ sys.path.append(
 
 
 # imports that require sys.path.append pointers
-
 from instrbuilder.setup import scpi_lia, scpi_fg, scpi_fg2, scpi_dmm, scpi_osc, data_save
-
-from ophyd.scpi import ScpiSignal, ScpiSignalBase, ScpiSignalFileSave, StatCalculator, ScpiCompositeBase, ScpiCompositeSignal
+from ophyd.scpi import ScpiSignal, ScpiSignalBase, ScpiSignalFileSave, StatCalculator
 from ophyd import Device, Component, Signal
 from ophyd.device import Kind
 from instrbuilder.scpi import SCPI
@@ -44,7 +42,7 @@ def create_filter(order, sample_rate, tau):
     return num, denom
 
 
-def apply_filter(arr, num, denom, sample_rate, tau):
+def apply_filter(arr, num, denom, sample_rate, tau, final_stat_function):
     output_signal = signal.filtfilt(num, denom, arr)
 
     tau_settle = 5
@@ -52,8 +50,8 @@ def apply_filter(arr, num, denom, sample_rate, tau):
     decimate_length = int(tau / (1 / sample_rate))
 
     arr_downsample = output_signal[settle_idx::decimate_length]
-
-    return arr_downsample[0]
+    print('Filter data length after decimation ={}'.format(len(arr_downsample)))
+    return final_stat_function(arr_downsample)
 
 
 class ManualDevice(Device):
@@ -95,27 +93,37 @@ class FilterStatistics(Device):
     print('Sample rate = {} [Hz]'.format(sample_rate))
     tau = 30e-3
 
+    func_list = ['filter_6dB', 'filter_24dB']
+
     num, denom = create_filter(order=order, sample_rate=sample_rate, tau=tau)
     func_name = 'filter_6dB'
-    func = functools.partial(apply_filter, num=num, denom=denom, sample_rate=sample_rate, tau=tau)
-    components[func_name] = Component(StatCalculator, name=func, img=None,
-                                      stat_func=func, kind=Kind.hinted)
+
+    stat_funcs = [np.mean, np.std]
+    for stat_func in stat_funcs:
+        func = functools.partial(apply_filter, num=num, denom=denom, sample_rate=sample_rate,
+                                 tau=tau, final_stat_function=stat_func)
+        components[func_name + '_' + stat_func.__name__] = Component(StatCalculator, name=func, img=None,
+                                                               stat_func=func, kind=Kind.hinted)
 
     order = 4  # db/octave = order*24dB
     num, denom = create_filter(order=order, sample_rate=sample_rate, tau=tau)
     func_name = 'filter_24dB'
-    func = functools.partial(apply_filter, num=num, denom=denom, sample_rate=sample_rate, tau=tau)
-    components[func_name] = Component(StatCalculator, name=func, img=None,
-                                      stat_func=func, kind=Kind.hinted)
+    for stat_func in stat_funcs:
+        func = functools.partial(apply_filter, num=num, denom=denom, sample_rate=sample_rate,
+                                 tau=tau, final_stat_function=stat_func)
+        components[func_name + '_' +  stat_func.__name__] = Component(StatCalculator, name=func, img=None,
+                                                               stat_func=func, kind=Kind.hinted)
+
 
     locals().update(components)
 
     def __init__(self, array_source, *args, **kwargs):
         super().__init__(*args, **kwargs)
         for func in self.func_list:
-            getattr(self, func.__name__)._img = array_source.get_array
-            # update the name
-            getattr(self, func.__name__).name = array_source.name + getattr(self, func.__name__).name
+            for stat_func in self.stat_funcs:
+                getattr(self, func + '_' +  stat_func.__name__)._img = array_source.get_array
+                # update the name
+                getattr(self, func + '_' +  stat_func.__name__).name = array_source.name + getattr(self, func + '_' +  stat_func.__name__).name
 
 
 # ------------------------------------------------------------
@@ -305,6 +313,7 @@ class FunctionGen():
 # 					Oscilloscope
 # ------------------------------------------------------------
 
+
 class Oscilloscope(Device):
     components = {}
     channels = [1, 2]
@@ -352,7 +361,7 @@ class Oscilloscope(Device):
 
         if cmd.name == 'meas_phase':  # requires two channels to find phase difference
             components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi_osc, cmd_name=cmd.name,
-                                             configs={'chan1':1, 'chan2':2}, kind=comp_kind)
+                                             configs={'chan1': 1, 'chan2': 2}, kind=comp_kind)
 
     unconnected = scpi_osc.unconnected
     locals().update(components)
@@ -381,7 +390,8 @@ class MultiMeter(Device):
                                                  scpi_cl=scpi_dmm, cmd_name=cmd.name,
                                                  save_path=data_save.directory,
                                                  kind=Kind.normal,
-                                                 precision=10, # this precision won't print the full file name, but enough to be unique
+                                                 precision=10, # this precision won't print the full file name,
+                                                               # but enough to be unique
                                                  configs={'reads_per_trigger': 1024, 'aperture': 20e-6,
                                                  'trig_source': 'EXT', 'trig_count': 1})
 
@@ -391,9 +401,10 @@ class MultiMeter(Device):
                                                  save_path=data_save.directory,
                                                  kind=Kind.normal,
                                                  precision=10,
-                                                 # this precision won't print the full file name, but enough to be unique
+                                                 # this precision won't print the full file name,
+                                                 # but enough to be unique
                                                  configs={'reads_per_trigger': 8, 'aperture': 20e-6,
-                                                          'trig_source': 'EXT', 'trig_count': 1024,
+                                                          'trig_source': 'EXT', 'trig_count': 2048,
                                                           'sample_timer': 102.4e-6, 'repeats': 1})
 
             elif cmd.getter_type.returns_array:
