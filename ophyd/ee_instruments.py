@@ -199,6 +199,34 @@ class LockIn(Device):
 # ------------------------------------------------------------
 
 
+def generate_ophyd_obj(name, scpi):
+    components = {}
+    for cmd_key, cmd in scpi._cmds.items():
+        if cmd.is_config:
+            comp_kind = Kind.config
+        else:
+            comp_kind = Kind.normal
+
+        if hasattr(cmd.getter_type, 'returns_array'):
+            if cmd.getter_type.returns_array:
+                print(
+                    'Skipping command {}. Returns an array but a status monitor dictionary is not prepared'.format(
+                        cmd.name))
+        else:
+            if cmd.setter and cmd.getter_inputs == 0 and cmd.setter_inputs < 2:  # a setter
+                components[cmd.name] = Component(ScpiSignal, scpi_cl=scpi, cmd_name=cmd.name,
+                                                 configs={}, kind=comp_kind)
+            if (not cmd.setter) and cmd.getter_inputs == 0:  # a getter (only)
+                components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi, cmd_name=cmd.name,
+                                                 configs={}, kind=comp_kind)
+    components['unconnected'] = scpi.unconnected
+
+    # create device subclass using type
+    ophyd_dev = type(name, (Device,), components)
+
+    # return components for now as a debug hook.
+    return ophyd_dev, components
+
 class FunctionGen(Device):
     components = {}
     for cmd_key, cmd in scpi_fg._cmds.items():
