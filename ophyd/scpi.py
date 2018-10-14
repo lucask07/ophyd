@@ -3,43 +3,22 @@ import logging
 import time
 import threading
 import functools 
-from collections import deque, OrderedDict
+from collections import deque
 import os
-import uuid
 import itertools
 
 import numpy as np
-
 import wrapt
 
-
-from .status import Status, StatusBase
+from .status import Status
 from .signal import Signal
-from .sim import SynSignal
+from .sim import SynSignal, NullStatus, new_uid
 
 logger = logging.getLogger(__name__)
 
-def new_uid():
-    return str(uuid.uuid4())
-
-
-def short_uid(label=None, truncate=6):
-    "Return a readable but unique id like 'label-fjfi5a'"
-    if label:
-        return '-'.join([label, new_uid()[:truncate]])
-    else:
-        return new_uid()[:truncate]
-
-class NullStatus(StatusBase):
-    "A simple Status object that is always immediately done, successfully."
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._finished(success=True)
-
 
 class ScpiSignalBase(Signal):
-    '''A read-only SCPI signal -- that is, one without setters
+    """A read-only SCPI signal -- that is, one without setters
 
     Keyword arguments are passed on to the base class (Signal) initializer
 
@@ -53,16 +32,15 @@ class ScpiSignalBase(Signal):
     configs : dict, optional 
         The configuration dictionary that is sent to get if its a long getter
 
-    '''
-    def __init__(self, *, scpi_cl, cmd_name, name = None,
-                 precision = 7, configs = {}, dtype = 'number',
-                 shape = 1, status_monitor = None,
+    """
+    def __init__(self, *, scpi_cl, cmd_name, name=None,
+                 precision=7, configs={}, dtype='number',
+                 shape=1, status_monitor=None,
                  **kwargs):
 
         cmd = scpi_cl._cmds[cmd_name]
 
         self._scpi_cl = scpi_cl 
-        # print('name = {}'.format(scpi_cl.name + ':' + cmd_name))
         composite_name = scpi_cl.name + '_' + cmd_name
         super().__init__(name=composite_name, **kwargs)
         self._read_name = composite_name
@@ -86,11 +64,11 @@ class ScpiSignalBase(Signal):
         #       Does this break bluesky?
 
         # TODO: my assumption is that the ophyd 'enum_strs' is the same as the 
-        #       instrabuilder lookup tables. Confirm this is correct.
+        #       instrbuilder lookup tables. Confirm this is correct.
         self.enum_strs = list(scpi_cl._cmds[cmd.name].lookup.keys())
 
         # setup the getter 
-        if scpi_cl._cmds[cmd.name].returns_image: #TODO, am I actually using this? 
+        if scpi_cl._cmds[cmd.name].returns_image: #TODO: determine if this is used
             @wrapt.decorator
             def only_one_return(wrapped, instance, args, kwargs):
                 return wrapped(*args, **kwargs)[0]
@@ -107,17 +85,17 @@ class ScpiSignalBase(Signal):
         if status_monitor is not None:
             def trig_func():
                 for tname in status_monitor['trig_name']:
-                    scpi_cl.set(None, name = tname, 
-                        configs = status_monitor['trig_configs'])
+                    scpi_cl.set(None, name=tname,
+                        configs=status_monitor['trig_configs'])
 
             self._trigger_func = trig_func
             self._status_read = functools.partial(scpi_cl.get, name=status_monitor['name'],
-                configs = status_monitor['configs'])
+                configs=status_monitor['configs'])
             self._threshold_function = status_monitor['threshold_function']
             self._threshold_level = status_monitor['threshold_level']
             self._poll_time = status_monitor['poll_time']
             self._post_status = functools.partial(scpi_cl.set, name=status_monitor['post_name'],
-                configs = status_monitor['post_configs'])
+                configs=status_monitor['post_configs'])
 
     def trigger(self):
         # first wait until another signal is ready, i.e. a count of readings in a buffer
@@ -179,7 +157,7 @@ class ScpiSignalBase(Signal):
 
 
 class ScpiSignal(ScpiSignalBase):
-    '''A read-write SCPI signal -- that is, with a setter and a getter
+    """A read-write SCPI signal -- that is, with a setter and a getter
 
     Keyword arguments are passed on to the base class (Signal) initializer
 
@@ -191,7 +169,7 @@ class ScpiSignal(ScpiSignalBase):
         The name of the command to read from [_cmds]
     configs : dict, optional 
         The configuration dictionary that is sent to get if its a long getter
-    '''
+    """
     def set(self, value):        
         st = Status()
 
@@ -215,7 +193,7 @@ class ScpiSignal(ScpiSignalBase):
 
 
 class ScpiCompositeBase(Signal):
-    '''A read-only SCPI signal that originates from a composite function of multiple SCPI actions
+    """A read-only SCPI signal that originates from a composite function of multiple SCPI actions
 
     Keyword arguments are passed on to the base class (Signal) initializer
 
@@ -228,7 +206,7 @@ class ScpiCompositeBase(Signal):
     configs : dict, optional
         The configuration dictionary that is sent to get if its a long getter
 
-    '''
+    """
     def __init__(self, *, get_func, name,
                 precision = 7, configs = {}, dtype = 'number',
                 shape = 1, status_monitor = None,
@@ -255,7 +233,7 @@ class ScpiCompositeBase(Signal):
         #       Does this break bluesky?
 
         # TODO: my assumption is that the ophyd 'enum_strs' is the same as the
-        #       instrabuilder lookup tables. Confirm this is correct.
+        #       instrbuilder lookup tables. Confirm this is correct.
         # self.enum_strs = list(scpi_cl._cmds[cmd.name].lookup.keys())
 
         self._get = get_func
@@ -323,7 +301,8 @@ class ScpiCompositeBase(Signal):
 
 
 class ScpiCompositeSignal(ScpiCompositeBase):
-    '''A read-write SCPI signal that originates from a composite function of multiple SCPI actions
+    """A read-write SCPI signal that originates from a composite function of multiple SCPI actions
+
 
     Keyword arguments are passed on to the base class (Signal) initializer
 
@@ -337,7 +316,7 @@ class ScpiCompositeSignal(ScpiCompositeBase):
         The command for setting
     configs : dict, optional
         The configuration dictionary that is sent to get if its a long getter
-    '''
+    """
 
     def __init__(self, *, get_func, name, set_func,
                 precision = 7, configs = {}, dtype = 'number',
@@ -370,7 +349,7 @@ class ScpiCompositeSignal(ScpiCompositeBase):
 
 class ScpiSignalFileSave(ScpiSignalBase):
     """
-    A ScpiSignalBase (read-only) integrated with databroker.assets (LJK)
+    A ScpiSignalBase (read-only) integrated with databroker.assets
 
     Parameters
     ----------
@@ -494,6 +473,7 @@ class ScpiSignalFileSave(ScpiSignalBase):
         self._file_stem = None
         self._path_stem = None
         self._result.clear()
+
 
 class StatCalculator(SynSignal):
     """
