@@ -9,19 +9,15 @@ import numpy as np
 import scipy.signal as signal
 import functools
 
-# use symbolic links
-sys.path.append(
-    '/Users/koer2434/ophyd/')  # these 2 will become an import of ophyd
-sys.path.append(
-    '/Users/koer2434/instrbuilder/')  # this instrbuilder: the SCPI library
-
-
 # imports that require sys.path.append pointers
-from instrbuilder.setup import scpi_lia, scpi_fg, scpi_fg2, scpi_dmm, scpi_osc, data_save
-from ophyd.scpi import ScpiSignal, ScpiSignalBase, ScpiSignalFileSave, StatCalculator
+
+# from instrbuilder.setup import scpi_lia, scpi_fg, scpi_fg2, scpi_dmm, scpi_osc, data_save
+from instrbuilder.setup import data_save
+from ophyd.scpi_like import ScpiSignal, ScpiSignalBase, ScpiSignalFileSave, StatCalculator
 from ophyd import Device, Component, Signal
 from ophyd.device import Kind
 from instrbuilder.scpi import SCPI
+
 
 class BlankCommHandle():
     def __init__(self):
@@ -111,115 +107,169 @@ class FilterStatistics(Device):
     for stat_func in stat_funcs:
         func = functools.partial(apply_filter, num=num, denom=denom, sample_rate=sample_rate,
                                  tau=tau, final_stat_function=stat_func)
-        components[func_name + '_' +  stat_func.__name__] = Component(StatCalculator, name=func, img=None,
+        components[func_name + '_' + stat_func.__name__] = Component(StatCalculator, name=func, img=None,
                                                                stat_func=func, kind=Kind.hinted)
-
-
     locals().update(components)
 
     def __init__(self, array_source, *args, **kwargs):
         super().__init__(*args, **kwargs)
         for func in self.func_list:
             for stat_func in self.stat_funcs:
-                getattr(self, func + '_' +  stat_func.__name__)._img = array_source.get_array
+                getattr(self, func + '_' + stat_func.__name__)._img = array_source.get_array
                 # update the name
-                getattr(self, func + '_' +  stat_func.__name__).name = array_source.name + getattr(self, func + '_' +  stat_func.__name__).name
+                getattr(self, func + '_' + stat_func.__name__).name = array_source.name + getattr(self, func + '_' +  stat_func.__name__).name
 
 
 # ------------------------------------------------------------
 # 					Lock-in Amplifier
 # ------------------------------------------------------------
-
-
-class LockIn(Device):
-    components = {}
-    for cmd_key, cmd in scpi_lia._cmds.items():
-        if cmd.is_config:
-            comp_kind = Kind.config
-        else:
-            comp_kind = Kind.normal
-
-        if hasattr(cmd.getter_type, 'returns_array'):
-            if cmd.getter_type.returns_array:
-                if cmd_key == 'read_buffer':
-                    # setup, monitoring and wind-down for the read_buffer command.
-                    # TODO: make this less awkward, part of instrbuilder?
-                    status_monitor = {'name': 'data_pts_ready', 'configs': {},
-                                      'threshold_function': lambda read_val, thresh: read_val > thresh,
-                                      'threshold_level': 100,
-                                      'poll_time': 0.05,
-                                      'trig_name': ['reset_scan', 'start_scan', 'trig'],
-                                      'trig_configs': {},
-                                      'post_name': 'pause_scan',
-                                      'post_configs': {}}
-                    components[cmd.name] = Component(ScpiSignalFileSave, name=cmd.name,
-                                                     scpi_cl=scpi_lia, cmd_name=cmd.name,
-                                                     save_path = data_save.directory,
-                                                     kind = Kind.normal,
-                                                     precision = 10, # precision sets length printed in live table
-                                                     configs = {'start_pt': 0, 'num_pts': 80},
-                                                     status_monitor=status_monitor)
-                else:
-                    print('Skipping LockIn command {}. Returns an array but a status monitor dictionary is not prepared'.format(cmd.name))
-
-        else:
-            if cmd.setter and cmd.getter_inputs == 0 and cmd.setter_inputs < 2:
-                components[cmd.name] = Component(ScpiSignal, scpi_cl=scpi_lia, cmd_name=cmd.name,
-                                                 configs={}, kind=comp_kind)
-            if (not cmd.setter) and cmd.getter_inputs == 0:
-                components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi_lia, cmd_name=cmd.name,
-                                                 configs={}, kind=comp_kind)
-
-    # Other commands need to be explicitly entered
-    # Long setters (i.e. SCPI commands that takes more than a single value)
-
-    off_exp = Component(ScpiSignal,
-                        scpi_cl=scpi_lia, cmd_name='off_exp',
-                        configs={'chan': 2})  # offset and expand
-
-    ch1_disp = Component(ScpiSignal,
-                         scpi_cl=scpi_lia, cmd_name='ch1_disp',
-                         configs={'ratio': 0})  # ratio the display to None (0), Aux1 (1) or Aux2 (2)
-
-    unconnected = scpi_lia.unconnected
-
-    locals().update(components)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.help = scpi_lia.help
-        self.help_all = scpi_lia.help_all
-
-    def stage(self):
-        super().stage()
-
+#
+#
+# class LockIn(Device):
+#     components = {}
+#     for cmd_key, cmd in scpi_lia._cmds.items():
+#         if cmd.is_config:
+#             comp_kind = Kind.config
+#         else:
+#             comp_kind = Kind.normal
+#
+#         if hasattr(cmd.getter_type, 'returns_array'):
+#             if cmd.getter_type.returns_array:
+#                 if cmd_key == 'read_buffer':
+#                     # setup, monitoring and wind-down for the read_buffer command.
+#                     # TODO: make this less awkward, part of instrbuilder?
+#                     status_monitor = {'name': 'data_pts_ready', 'configs': {},
+#                                       'threshold_function': lambda read_val, thresh: read_val > thresh,
+#                                       'threshold_level': 100,
+#                                       'poll_time': 0.05,
+#                                       'trig_name': ['reset_scan', 'start_scan', 'trig'],
+#                                       'trig_configs': {},
+#                                       'post_name': 'pause_scan',
+#                                       'post_configs': {}}
+#                     components[cmd.name] = Component(ScpiSignalFileSave, name=cmd.name,
+#                                                      scpi_cl=scpi_lia, cmd_name=cmd.name,
+#                                                      save_path = data_save.directory,
+#                                                      kind = Kind.normal,
+#                                                      precision = 10, # precision sets length printed in live table
+#                                                      configs = {'start_pt': 0, 'num_pts': 80},
+#                                                      status_monitor=status_monitor)
+#                 else:
+#                     print('Skipping LockIn command {}. Returns an array but a status monitor dictionary is not prepared'.format(cmd.name))
+#
+#         else:
+#             if cmd.setter and cmd.getter_inputs == 0 and cmd.setter_inputs < 2:
+#                 components[cmd.name] = Component(ScpiSignal, scpi_cl=scpi_lia, cmd_name=cmd.name,
+#                                                  configs={}, kind=comp_kind)
+#             if (not cmd.setter) and cmd.getter_inputs == 0:
+#                 components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi_lia, cmd_name=cmd.name,
+#                                                  configs={}, kind=comp_kind)
+#
+#     # Other commands need to be explicitly entered
+#     # Long setters (i.e. SCPI commands that takes more than a single value)
+#
+#     off_exp = Component(ScpiSignal,
+#                         scpi_cl=scpi_lia, cmd_name='off_exp',
+#                         configs={'chan': 2})  # offset and expand
+#
+#     ch1_disp = Component(ScpiSignal,
+#                          scpi_cl=scpi_lia, cmd_name='ch1_disp',
+#                          configs={'ratio': 0})  # ratio the display to None (0), Aux1 (1) or Aux2 (2)
+#
+#     unconnected = scpi_lia.unconnected
+#
+#     locals().update(components)
+#
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
+#         self.help = scpi_lia.help
+#         self.help_all = scpi_lia.help_all
+#
+#     def stage(self):
+#         super().stage()
+#
 
 # ------------------------------------------------------------
 # 					Function Generator
 # ------------------------------------------------------------
 
+import scpi  # check if instance is a member of this class
+import ic
+import instruments
 
-def generate_ophyd_obj(name, scpi):
+
+def generate_ophyd_obj(name, scpi_obj):
     components = {}
-    for cmd_key, cmd in scpi._cmds.items():
+    for cmd_key, cmd in scpi_obj._cmds.items():
         if cmd.is_config:
             comp_kind = Kind.config
         else:
             comp_kind = Kind.normal
 
-        if hasattr(cmd.getter_type, 'returns_array'):
-            if cmd.getter_type.returns_array:
-                print(
-                    'Skipping command {}. Returns an array but a status monitor dictionary is not prepared'.format(
-                        cmd.name))
+        if isinstance(scpi_obj, scpi.SCPI):
+            if hasattr(cmd.getter_type, 'returns_array'):
+                if cmd.name == 'burst_volt':
+                    components[cmd.name] = Component(ScpiSignalFileSave, name=cmd.name,
+                                                     control_layer=scpi_obj, cmd_name=cmd.name,
+                                                     save_path=data_save.directory,
+                                                     kind=Kind.normal,
+                                                     precision=10, # this precision won't print the full file name,
+                                                                   # but enough to be unique
+                                                     configs={'reads_per_trigger': 1024, 'aperture': 20e-6,
+                                                              'trig_source': 'EXT', 'trig_count': 1})
+
+                if cmd.name == 'burst_volt_timer':
+                    components[cmd.name] = Component(ScpiSignalFileSave, name=cmd.name,
+                                                     control_layer=scpi_obj, cmd_name=cmd.name,
+                                                     save_path=data_save.directory,
+                                                     kind=Kind.normal,
+                                                     precision=10,
+                                                     # this precision won't print the full file name,
+                                                     # but enough to be unique
+                                                     configs={'reads_per_trigger': 8, 'aperture': 20e-6,
+                                                              'trig_source': 'EXT', 'trig_count': 2048,
+                                                              'sample_timer': 102.4e-6, 'repeats': 1})
+                if cmd.getter_type.returns_array:
+                    print(
+                        'Skipping command {}. Returns an array but a status monitor dictionary is not prepared'.format(
+                            cmd.name))
+            else:
+                if cmd.setter and cmd.getter_inputs == 0 and cmd.setter_inputs < 2:  # a setter
+                    components[cmd.name] = Component(ScpiSignal, control_layer=scpi_obj, cmd_name=cmd.name,
+                                                     configs={}, kind=comp_kind)
+                if (not cmd.setter) and cmd.getter_inputs == 0:  # a getter (only)
+                    components[cmd.name] = Component(ScpiSignalBase, control_layer=scpi_obj, cmd_name=cmd.name,
+                                                     configs={}, kind=comp_kind)
+
+                #  -----------------------  Multimeter  -----------------------
+                if isinstance(scpi_obj, instruments.KeysightMultimeter):
+                    # AC/DC configurations.
+                    #   Create DC versions
+                    if cmd.setter and cmd.getter_inputs == 1 and cmd.setter_inputs == 2 and '{ac_dc}' in cmd.ascii_str:
+                        components[cmd.name + '_dc'] = Component(ScpiSignal, control_layer=scpi_obj, cmd_name=cmd.name,
+                                                                 configs={'ac_dc': 'DC'}, kind=comp_kind)
+                    if (not cmd.setter) and cmd.getter_inputs == 1 and '{ac_dc}' in cmd.ascii_str:
+                        components[cmd.name + '_dc'] = Component(ScpiSignalBase, control_layer=scpi_obj, cmd_name=cmd.name,
+                                                                 configs={'ac_dc': 'DC'}, kind=comp_kind)
+                    # AC/DC configurations.
+                    #   Create AC versions
+                    if cmd.setter and cmd.getter_inputs == 1 and cmd.setter_inputs == 2 and '{ac_dc}' in cmd.ascii_str:
+                        components[cmd.name + '_ac'] = Component(ScpiSignal, control_layer=scpi_obj, cmd_name=cmd.name,
+                                                                 configs={'ac_dc': 'AC'}, kind=comp_kind)
+                    if (not cmd.setter) and cmd.getter_inputs == 1 and '{ac_dc}' in cmd.ascii_str:
+                        components[cmd.name + '_ac'] = Component(ScpiSignalBase, control_layer=scpi_obj, cmd_name=cmd.name,
+                                                                 configs={'ac_dc': 'AC'}, kind=comp_kind)
+
+        elif isinstance(scpi_obj, ic.IC):
+            if cmd.read_write in ['R/W', 'W']:
+                components[cmd.name] = Component(ScpiSignal, control_layer=scpi_obj, cmd_name=cmd.name,
+                                                 configs={}, kind=comp_kind)
+            elif cmd.read_write in ['R']:
+                components[cmd.name] = Component(ScpiSignal, control_layer=scpi_obj, cmd_name=cmd.name,
+                                                 configs={}, kind=comp_kind)
         else:
-            if cmd.setter and cmd.getter_inputs == 0 and cmd.setter_inputs < 2:  # a setter
-                components[cmd.name] = Component(ScpiSignal, scpi_cl=scpi, cmd_name=cmd.name,
-                                                 configs={}, kind=comp_kind)
-            if (not cmd.setter) and cmd.getter_inputs == 0:  # a getter (only)
-                components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi, cmd_name=cmd.name,
-                                                 configs={}, kind=comp_kind)
-    components['unconnected'] = scpi.unconnected
+            print('unexpected Class type')
+
+    components['unconnected'] = scpi_obj.unconnected
 
     # create device subclass using type
     ophyd_dev = type(name, (Device,), components)
@@ -227,74 +277,74 @@ def generate_ophyd_obj(name, scpi):
     # return components for now as a debug hook.
     return ophyd_dev, components
 
-class FunctionGen(Device):
-    components = {}
-    for cmd_key, cmd in scpi_fg._cmds.items():
-        if cmd.is_config:
-            comp_kind = Kind.config
-        else:
-            comp_kind = Kind.normal
-
-        if hasattr(cmd.getter_type, 'returns_array'):
-            if cmd.getter_type.returns_array:
-                print('Skipping FunctionGen command {}. Returns an array but a status monitor dictionary is not prepared'.format(cmd.name))
-        else:
-            if cmd.setter and cmd.getter_inputs == 0 and cmd.setter_inputs < 2:
-                components[cmd.name] = Component(ScpiSignal, scpi_cl=scpi_fg, cmd_name=cmd.name,
-                                                 configs={}, kind=comp_kind)
-            if (not cmd.setter) and cmd.getter_inputs == 0:
-                components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi_fg, cmd_name=cmd.name,
-                                                 configs={}, kind=comp_kind)
-    unconnected = scpi_fg.unconnected
-    locals().update(components)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.help = scpi_fg.help
-        self.help_all = scpi_fg.help_all
-
-    def stage(self):
-        # TODO: this is too specific
-        self.load.set('INF')
-        self.output.set('ON')
-        super().stage()
+# class FunctionGen(Device):
+#     components = {}
+#     for cmd_key, cmd in scpi_fg._cmds.items():
+#         if cmd.is_config:
+#             comp_kind = Kind.config
+#         else:
+#             comp_kind = Kind.normal
+#
+#         if hasattr(cmd.getter_type, 'returns_array'):
+#             if cmd.getter_type.returns_array:
+#                 print('Skipping FunctionGen command {}. Returns an array but a status monitor dictionary is not prepared'.format(cmd.name))
+#         else:
+#             if cmd.setter and cmd.getter_inputs == 0 and cmd.setter_inputs < 2:
+#                 components[cmd.name] = Component(ScpiSignal, scpi_cl=scpi_fg, cmd_name=cmd.name,
+#                                                  configs={}, kind=comp_kind)
+#             if (not cmd.setter) and cmd.getter_inputs == 0:
+#                 components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi_fg, cmd_name=cmd.name,
+#                                                  configs={}, kind=comp_kind)
+#     unconnected = scpi_fg.unconnected
+#     locals().update(components)
+#
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
+#         self.help = scpi_fg.help
+#         self.help_all = scpi_fg.help_all
+#
+#     def stage(self):
+#         # TODO: this is too specific
+#         self.load.set('INF')
+#         self.output.set('ON')
+#         super().stage()
 
 # ------------------------------------------------------------
 # 					Function Generator
 # ------------------------------------------------------------
 
 
-class FunctionGen2(Device):
-    components = {}
-    for cmd_key, cmd in scpi_fg2._cmds.items():
-        if cmd.is_config:
-            comp_kind = Kind.config
-        else:
-            comp_kind = Kind.normal
-
-        if hasattr(cmd.getter_type, 'returns_array'):
-            if cmd.getter_type.returns_array:
-                print('Skipping FunctionGen command {}. Returns an array but a status monitor dictionary is not prepared'.format(cmd.name))
-        else:
-            if cmd.setter and cmd.getter_inputs == 0 and cmd.setter_inputs < 2:
-                components[cmd.name] = Component(ScpiSignal, scpi_cl=scpi_fg2, cmd_name=cmd.name,
-                                                 configs={}, kind=comp_kind)
-            if (not cmd.setter) and cmd.getter_inputs == 0:
-                components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi_fg2, cmd_name=cmd.name,
-                                                 configs={}, kind=comp_kind)
-    unconnected = scpi_fg2.unconnected
-    locals().update(components)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.help = scpi_fg2.help
-        self.help_all = scpi_fg2.help_all
-
-    def stage(self):
-        # TODO: this is too specific
-        self.load.set('INF')
-        self.output.set('ON')
-        super().stage()
+# class FunctionGen2(Device):
+#     components = {}
+#     for cmd_key, cmd in scpi_fg2._cmds.items():
+#         if cmd.is_config:
+#             comp_kind = Kind.config
+#         else:
+#             comp_kind = Kind.normal
+#
+#         if hasattr(cmd.getter_type, 'returns_array'):
+#             if cmd.getter_type.returns_array:
+#                 print('Skipping FunctionGen command {}. Returns an array but a status monitor dictionary is not prepared'.format(cmd.name))
+#         else:
+#             if cmd.setter and cmd.getter_inputs == 0 and cmd.setter_inputs < 2:
+#                 components[cmd.name] = Component(ScpiSignal, scpi_cl=scpi_fg2, cmd_name=cmd.name,
+#                                                  configs={}, kind=comp_kind)
+#             if (not cmd.setter) and cmd.getter_inputs == 0:
+#                 components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi_fg2, cmd_name=cmd.name,
+#                                                  configs={}, kind=comp_kind)
+#     unconnected = scpi_fg2.unconnected
+#     locals().update(components)
+#
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
+#         self.help = scpi_fg2.help
+#         self.help_all = scpi_fg2.help_all
+#
+#     def stage(self):
+#         # TODO: this is too specific
+#         self.load.set('INF')
+#         self.output.set('ON')
+#         super().stage()
 
 # ------------------------------------------------------------
 # 					Function Generator (using __init_subclass__)
@@ -342,130 +392,130 @@ class FunctionGen():
 # ------------------------------------------------------------
 
 
-class Oscilloscope(Device):
-    components = {}
-    channels = [1, 2]
-    for cmd_key, cmd in scpi_osc._cmds.items():
-        if cmd.is_config:
-            comp_kind = Kind.config
-        else:
-            comp_kind = Kind.normal
-
-        if hasattr(cmd.getter_type, 'returns_array'):
-            if cmd.name == 'display_data':
-                print('Creating display data command')
-
-                def save_png(filename, data):
-                    with open(filename, 'wb') as out_f:
-                        out_f.write(bytearray(data))
-
-                components[cmd.name] = Component(ScpiSignalFileSave, name=cmd.name,
-                                                 scpi_cl=scpi_osc, cmd_name=cmd.name,
-                                                 save_path=data_save.directory,
-                                                 save_func=save_png, save_spec='PNG', save_ext='png',
-                                                 kind=Kind.normal,
-                                                 precision=10)  # this precision won't print the full file name, but enough to be unique)
-
-            elif cmd.getter_type.returns_array:
-                print('Skipping Oscilloscpe command {}.'.format(cmd.name))
-                print(' Returns an array but a status monitor dictionary is not prepared')
-
-        else:
-            if cmd.setter and cmd.getter_inputs == 0 and cmd.setter_inputs < 2:
-                components[cmd.name] = Component(ScpiSignal, scpi_cl=scpi_osc, cmd_name=cmd.name,
-                                                 configs={}, kind=comp_kind)
-            if (not cmd.setter) and cmd.getter_inputs == 0:
-                components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi_osc, cmd_name=cmd.name,
-                                                 configs={}, kind=comp_kind)
-
-        #   Create components per chanel
-        for channel in channels:
-            if cmd.setter and cmd.getter_inputs == 1 and cmd.setter_inputs == 2 and '{channel}' in cmd.ascii_str:
-                components[cmd.name + '_chan{}'.format(channel)] = Component(ScpiSignal, scpi_cl=scpi_osc, cmd_name=cmd.name,
-                                                 configs={'channel': channel}, kind=comp_kind)
-            if (not cmd.setter) and cmd.getter_inputs == 1 and '{channel}' in cmd.ascii_str:
-                components[cmd.name + '_chan{}'.format(channel)] = Component(ScpiSignalBase, scpi_cl=scpi_osc, cmd_name=cmd.name,
-                                                 configs={'channel': channel}, kind=comp_kind)
-
-        if cmd.name == 'meas_phase':  # requires two channels to find phase difference
-            components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi_osc, cmd_name=cmd.name,
-                                             configs={'chan1': 1, 'chan2': 2}, kind=comp_kind)
-
-    unconnected = scpi_osc.unconnected
-    locals().update(components)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.help = scpi_osc.help
-        self.help_all = scpi_osc.help_all
+# class Oscilloscope(Device):
+#     components = {}
+#     channels = [1, 2]
+#     for cmd_key, cmd in scpi_osc._cmds.items():
+#         if cmd.is_config:
+#             comp_kind = Kind.config
+#         else:
+#             comp_kind = Kind.normal
+#
+#         if hasattr(cmd.getter_type, 'returns_array'):
+#             if cmd.name == 'display_data':
+#                 print('Creating display data command')
+#
+#                 def save_png(filename, data):
+#                     with open(filename, 'wb') as out_f:
+#                         out_f.write(bytearray(data))
+#
+#                 components[cmd.name] = Component(ScpiSignalFileSave, name=cmd.name,
+#                                                  scpi_cl=scpi_osc, cmd_name=cmd.name,
+#                                                  save_path=data_save.directory,
+#                                                  save_func=save_png, save_spec='PNG', save_ext='png',
+#                                                  kind=Kind.normal,
+#                                                  precision=10)  # this precision won't print the full file name, but enough to be unique)
+#
+#             elif cmd.getter_type.returns_array:
+#                 print('Skipping Oscilloscpe command {}.'.format(cmd.name))
+#                 print(' Returns an array but a status monitor dictionary is not prepared')
+#
+#         else:
+#             if cmd.setter and cmd.getter_inputs == 0 and cmd.setter_inputs < 2:
+#                 components[cmd.name] = Component(ScpiSignal, scpi_cl=scpi_osc, cmd_name=cmd.name,
+#                                                  configs={}, kind=comp_kind)
+#             if (not cmd.setter) and cmd.getter_inputs == 0:
+#                 components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi_osc, cmd_name=cmd.name,
+#                                                  configs={}, kind=comp_kind)
+#
+#         #   Create components per chanel
+#         for channel in channels:
+#             if cmd.setter and cmd.getter_inputs == 1 and cmd.setter_inputs == 2 and '{channel}' in cmd.ascii_str:
+#                 components[cmd.name + '_chan{}'.format(channel)] = Component(ScpiSignal, scpi_cl=scpi_osc, cmd_name=cmd.name,
+#                                                  configs={'channel': channel}, kind=comp_kind)
+#             if (not cmd.setter) and cmd.getter_inputs == 1 and '{channel}' in cmd.ascii_str:
+#                 components[cmd.name + '_chan{}'.format(channel)] = Component(ScpiSignalBase, scpi_cl=scpi_osc, cmd_name=cmd.name,
+#                                                  configs={'channel': channel}, kind=comp_kind)
+#
+#         if cmd.name == 'meas_phase':  # requires two channels to find phase difference
+#             components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi_osc, cmd_name=cmd.name,
+#                                              configs={'chan1': 1, 'chan2': 2}, kind=comp_kind)
+#
+#     unconnected = scpi_osc.unconnected
+#     locals().update(components)
+#
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
+#         self.help = scpi_osc.help
+#         self.help_all = scpi_osc.help_all
 
 # ------------------------------------------------------------
 # 					Digital Multimeter
 # ------------------------------------------------------------
 
 
-class MultiMeter(Device):
-    components = {}
-    for cmd_key, cmd in scpi_dmm._cmds.items():
-        if cmd.is_config:
-            comp_kind = Kind.config
-        else:
-            comp_kind = Kind.normal
-
-        if hasattr(cmd.getter_type, 'returns_array'):
-            if cmd.name == 'burst_volt':
-                components[cmd.name] = Component(ScpiSignalFileSave, name=cmd.name,
-                                                 scpi_cl=scpi_dmm, cmd_name=cmd.name,
-                                                 save_path=data_save.directory,
-                                                 kind=Kind.normal,
-                                                 precision=10, # this precision won't print the full file name,
-                                                               # but enough to be unique
-                                                 configs={'reads_per_trigger': 1024, 'aperture': 20e-6,
-                                                 'trig_source': 'EXT', 'trig_count': 1})
-
-            if cmd.name == 'burst_volt_timer':
-                components[cmd.name] = Component(ScpiSignalFileSave, name=cmd.name,
-                                                 scpi_cl=scpi_dmm, cmd_name=cmd.name,
-                                                 save_path=data_save.directory,
-                                                 kind=Kind.normal,
-                                                 precision=10,
-                                                 # this precision won't print the full file name,
-                                                 # but enough to be unique
-                                                 configs={'reads_per_trigger': 8, 'aperture': 20e-6,
-                                                          'trig_source': 'EXT', 'trig_count': 2048,
-                                                          'sample_timer': 102.4e-6, 'repeats': 1})
-
-            elif cmd.getter_type.returns_array:
-                print('Skipping command {}. '.format(cmd.name))
-                print('Returns an array but a status monitor dictionary is not prepared')
-        else:
-            if cmd.setter and cmd.getter_inputs == 0 and cmd.setter_inputs < 2:
-                components[cmd.name] = Component(ScpiSignal, scpi_cl=scpi_dmm, cmd_name=cmd.name,
-                                                 configs={}, kind=comp_kind)
-            if (not cmd.setter) and cmd.getter_inputs == 0:
-                components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi_dmm, cmd_name=cmd.name,
-                                                 configs={}, kind=comp_kind)
-            # AC/DC configurations.
-            #   Create DC versions
-            if cmd.setter and cmd.getter_inputs == 1 and cmd.setter_inputs == 2 and '{ac_dc}' in cmd.ascii_str:
-                components[cmd.name + '_dc'] = Component(ScpiSignal, scpi_cl=scpi_dmm, cmd_name=cmd.name,
-                                                 configs={'ac_dc': 'DC'}, kind=comp_kind)
-            if (not cmd.setter) and cmd.getter_inputs == 1 and '{ac_dc}' in cmd.ascii_str:
-                components[cmd.name + '_dc'] = Component(ScpiSignalBase, scpi_cl=scpi_dmm, cmd_name=cmd.name,
-                                                 configs={'ac_dc': 'DC'}, kind=comp_kind)
-            # AC/DC configurations.
-            #   Create AC versions
-            if cmd.setter and cmd.getter_inputs == 1 and cmd.setter_inputs == 2 and '{ac_dc}' in cmd.ascii_str:
-                components[cmd.name + '_ac'] = Component(ScpiSignal, scpi_cl=scpi_dmm, cmd_name=cmd.name,
-                                                 configs={'ac_dc': 'AC'}, kind=comp_kind)
-            if (not cmd.setter) and cmd.getter_inputs == 1 and '{ac_dc}' in cmd.ascii_str:
-                components[cmd.name + '_ac'] = Component(ScpiSignalBase, scpi_cl=scpi_dmm, cmd_name=cmd.name,
-                                                 configs={'ac_dc': 'AC'}, kind=comp_kind)
-
-    unconnected = scpi_dmm.unconnected
-    locals().update(components)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.help = scpi_dmm.help
-        self.help_all = scpi_dmm.help_all
+# class MultiMeter(Device):
+#     components = {}
+#     for cmd_key, cmd in scpi_dmm._cmds.items():
+#         if cmd.is_config:
+#             comp_kind = Kind.config
+#         else:
+#             comp_kind = Kind.normal
+#
+#         if hasattr(cmd.getter_type, 'returns_array'):
+#             if cmd.name == 'burst_volt':
+#                 components[cmd.name] = Component(ScpiSignalFileSave, name=cmd.name,
+#                                                  scpi_cl=scpi_dmm, cmd_name=cmd.name,
+#                                                  save_path=data_save.directory,
+#                                                  kind=Kind.normal,
+#                                                  precision=10, # this precision won't print the full file name,
+#                                                                # but enough to be unique
+#                                                  configs={'reads_per_trigger': 1024, 'aperture': 20e-6,
+#                                                  'trig_source': 'EXT', 'trig_count': 1})
+#
+#             if cmd.name == 'burst_volt_timer':
+#                 components[cmd.name] = Component(ScpiSignalFileSave, name=cmd.name,
+#                                                  scpi_cl=scpi_dmm, cmd_name=cmd.name,
+#                                                  save_path=data_save.directory,
+#                                                  kind=Kind.normal,
+#                                                  precision=10,
+#                                                  # this precision won't print the full file name,
+#                                                  # but enough to be unique
+#                                                  configs={'reads_per_trigger': 8, 'aperture': 20e-6,
+#                                                           'trig_source': 'EXT', 'trig_count': 2048,
+#                                                           'sample_timer': 102.4e-6, 'repeats': 1})
+#
+#             elif cmd.getter_type.returns_array:
+#                 print('Skipping command {}. '.format(cmd.name))
+#                 print('Returns an array but a status monitor dictionary is not prepared')
+#         else:
+#             if cmd.setter and cmd.getter_inputs == 0 and cmd.setter_inputs < 2:
+#                 components[cmd.name] = Component(ScpiSignal, scpi_cl=scpi_dmm, cmd_name=cmd.name,
+#                                                  configs={}, kind=comp_kind)
+#             if (not cmd.setter) and cmd.getter_inputs == 0:
+#                 components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi_dmm, cmd_name=cmd.name,
+#                                                  configs={}, kind=comp_kind)
+#             # AC/DC configurations.
+#             #   Create DC versions
+#             if cmd.setter and cmd.getter_inputs == 1 and cmd.setter_inputs == 2 and '{ac_dc}' in cmd.ascii_str:
+#                 components[cmd.name + '_dc'] = Component(ScpiSignal, scpi_cl=scpi_dmm, cmd_name=cmd.name,
+#                                                  configs={'ac_dc': 'DC'}, kind=comp_kind)
+#             if (not cmd.setter) and cmd.getter_inputs == 1 and '{ac_dc}' in cmd.ascii_str:
+#                 components[cmd.name + '_dc'] = Component(ScpiSignalBase, scpi_cl=scpi_dmm, cmd_name=cmd.name,
+#                                                  configs={'ac_dc': 'DC'}, kind=comp_kind)
+#             # AC/DC configurations.
+#             #   Create AC versions
+#             if cmd.setter and cmd.getter_inputs == 1 and cmd.setter_inputs == 2 and '{ac_dc}' in cmd.ascii_str:
+#                 components[cmd.name + '_ac'] = Component(ScpiSignal, scpi_cl=scpi_dmm, cmd_name=cmd.name,
+#                                                  configs={'ac_dc': 'AC'}, kind=comp_kind)
+#             if (not cmd.setter) and cmd.getter_inputs == 1 and '{ac_dc}' in cmd.ascii_str:
+#                 components[cmd.name + '_ac'] = Component(ScpiSignalBase, scpi_cl=scpi_dmm, cmd_name=cmd.name,
+#                                                  configs={'ac_dc': 'AC'}, kind=comp_kind)
+#
+#     unconnected = scpi_dmm.unconnected
+#     locals().update(components)
+#
+#     def __init__(self, *args, **kwargs):
+#         super().__init__(*args, **kwargs)
+#         self.help = scpi_dmm.help
+#         self.help_all = scpi_dmm.help_all

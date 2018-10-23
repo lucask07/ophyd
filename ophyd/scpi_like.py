@@ -18,30 +18,31 @@ logger = logging.getLogger(__name__)
 
 
 class ScpiSignalBase(Signal):
-    """A read-only SCPI signal -- that is, one without setters
+    """A read-only (without a setter) SCPI-like signal
+    SCPI generically indicates a non-pyepics instrument that has a control layer and a list of commands
 
     Keyword arguments are passed on to the base class (Signal) initializer
 
     Parameters
     ----------
-    scpi_cl : 
+    control_layer : 
         The instrument control layer object which has write, ask, and a dictionary of commands (_cmds) 
     cmd_name : str
         The name of the command to read from [_cmds]
-    name 
+    name  # TODO -- remove ??
     configs : dict, optional 
         The configuration dictionary that is sent to get if its a long getter
 
     """
-    def __init__(self, *, scpi_cl, cmd_name, name=None,
+    def __init__(self, *, control_layer, cmd_name, name=None,
                  precision=7, configs={}, dtype='number',
                  shape=1, status_monitor=None,
                  **kwargs):
 
-        cmd = scpi_cl._cmds[cmd_name]
+        cmd = control_layer._cmds[cmd_name]
 
-        self._scpi_cl = scpi_cl 
-        composite_name = scpi_cl.name + '_' + cmd_name
+        self._control_layer = control_layer 
+        composite_name = control_layer.name + '_' + cmd_name
         super().__init__(name=composite_name, **kwargs)
         self._read_name = composite_name
         self.lookup = cmd.lookup
@@ -53,10 +54,10 @@ class ScpiSignalBase(Signal):
         self.delay = None
 
         # TODO: limits 
-        # if scpi_cl._cmds[cmd_name].limits is not None:
-        #     self.scpi_limits = tuple(scpi_cl._cmds[cmd_name].limits)
+        # if control_layer._cmds[cmd_name].limits is not None:
+        #     self.cl_limits = tuple(control_layer._cmds[cmd_name].limits)
         # else: 
-        #     self.scpi_limits = self.limits
+        #     self.cl_limits = self.limits
 
         # TODO: Instrbuilder will use a list of "limits" 
         #       in this case (when len(limits) > 2 or type(limits) is Str) 
@@ -65,37 +66,36 @@ class ScpiSignalBase(Signal):
 
         # TODO: my assumption is that the ophyd 'enum_strs' is the same as the 
         #       instrbuilder lookup tables. Confirm this is correct.
-        self.enum_strs = list(scpi_cl._cmds[cmd.name].lookup.keys())
+        self.enum_strs = list(control_layer._cmds[cmd.name].lookup.keys())
 
         # setup the getter 
-        if scpi_cl._cmds[cmd.name].returns_image: #TODO: determine if this is used
+        if control_layer._cmds[cmd.name].returns_image:  # TODO: determine if this is used
             @wrapt.decorator
             def only_one_return(wrapped, instance, args, kwargs):
                 return wrapped(*args, **kwargs)[0]
-            _get = functools.partial(scpi_cl.get, name=cmd.name, configs=configs)
+            self.get = functools.partial(control_layer.get, name=cmd.name, configs=configs)
         else:
-            _get = functools.partial(scpi_cl.get, name=cmd.name, configs=configs)
-        self.get = _get
+            self.get = functools.partial(control_layer.get, name=cmd.name, configs=configs)
 
         # TODO -- better way to do this? 
         # setup the setter in case this signal is a setter (will be converted to self.set in the subclass)
-        self._set = functools.partial(scpi_cl.set, name=cmd.name, configs=configs)
+        self._set = functools.partial(control_layer.set, name=cmd.name, configs=configs)
 
         self._status_monitor = status_monitor 
         if status_monitor is not None:
             def trig_func():
                 for tname in status_monitor['trig_name']:
-                    scpi_cl.set(None, name=tname,
+                    control_layer.set(None, name=tname,
                         configs=status_monitor['trig_configs'])
 
             self._trigger_func = trig_func
-            self._status_read = functools.partial(scpi_cl.get, name=status_monitor['name'],
-                configs=status_monitor['configs'])
+            self._status_read = functools.partial(control_layer.get, name=status_monitor['name'],
+                                                  configs=status_monitor['configs'])
             self._threshold_function = status_monitor['threshold_function']
             self._threshold_level = status_monitor['threshold_level']
             self._poll_time = status_monitor['poll_time']
-            self._post_status = functools.partial(scpi_cl.set, name=status_monitor['post_name'],
-                configs=status_monitor['post_configs'])
+            self._post_status = functools.partial(control_layer.set, name=status_monitor['post_name'],
+                                                  configs=status_monitor['post_configs'])
 
     def trigger(self):
         # first wait until another signal is ready, i.e. a count of readings in a buffer
@@ -120,7 +120,7 @@ class ScpiSignalBase(Signal):
         dict
             Dictionary of name and formatted description string
         """
-        desc = {'source': '{}:{}'.format(self._scpi_cl.name, self._read_name), }
+        desc = {'source': '{}:{}'.format(self._control_layer.name, self._read_name), }
 
         desc['dtype'] = self.dtype
         desc['shape'] = self.shape
@@ -157,13 +157,13 @@ class ScpiSignalBase(Signal):
 
 
 class ScpiSignal(ScpiSignalBase):
-    """A read-write SCPI signal -- that is, with a setter and a getter
+    """A read-write SCPI-like signal -- that is, with a setter and a getter
 
     Keyword arguments are passed on to the base class (Signal) initializer
 
     Parameters
     ----------
-    scpi_cl : 
+    control_layer : 
         The instrument control layer object which has write, ask, and a dictionary of commands (_cmds) 
     name : str
         The name of the command to read from [_cmds]
@@ -193,7 +193,7 @@ class ScpiSignal(ScpiSignalBase):
 
 
 class ScpiCompositeBase(Signal):
-    """A read-only SCPI signal that originates from a composite function of multiple SCPI actions
+    """A read-only SCPI-like signal that originates from a composite function of multiple SCPI actions
 
     Keyword arguments are passed on to the base class (Signal) initializer
 
@@ -222,8 +222,8 @@ class ScpiCompositeBase(Signal):
         self.delay = None
 
         # TODO: limits
-        # if scpi_cl._cmds[cmd_name].limits is not None:
-        #     self.scpi_limits = tuple(scpi_cl._cmds[cmd_name].limits)
+        # if control_layer._cmds[cmd_name].limits is not None:
+        #     self.scpi_limits = tuple(control_layer._cmds[cmd_name].limits)
         # else:
         #     self.scpi_limits = self.limits
 
@@ -234,7 +234,7 @@ class ScpiCompositeBase(Signal):
 
         # TODO: my assumption is that the ophyd 'enum_strs' is the same as the
         #       instrbuilder lookup tables. Confirm this is correct.
-        # self.enum_strs = list(scpi_cl._cmds[cmd.name].lookup.keys())
+        # self.enum_strs = list(control_layer._cmds[cmd.name].lookup.keys())
 
         self._get = get_func
         self.get = self._get
@@ -262,7 +262,7 @@ class ScpiCompositeBase(Signal):
         dict
             Dictionary of name and formatted description string
         """
-        desc = {'source': '{}:{}'.format(self._scpi_cl.name, self._read_name), }
+        desc = {'source': '{}:{}'.format(self._control_layer.name, self._read_name), }
 
         val = self.value
         desc['dtype'] = self.dtype
@@ -301,8 +301,8 @@ class ScpiCompositeBase(Signal):
 
 
 class ScpiCompositeSignal(ScpiCompositeBase):
-    """A read-write SCPI signal that originates from a composite function of multiple SCPI actions
-
+    """A read-write SCPI-like signal that originates from a composite
+    function of multiple SCPI-like actions
 
     Keyword arguments are passed on to the base class (Signal) initializer
 
