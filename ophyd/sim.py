@@ -14,6 +14,7 @@ import copy
 import logging
 
 from .signal import Signal, EpicsSignal, EpicsSignalRO
+from .areadetector.base import EpicsSignalWithRBV
 from .status import DeviceStatus, StatusBase
 from .device import (Device, Component, Component as C,
                      DynamicDeviceComponent as DDC, Kind)
@@ -1094,8 +1095,8 @@ class FakeEpicsSignal(SynSignal):
     need extra hooks for modifying the signal's properties after the class
     instantiates.
 
-    We can emulate EpicsSignal features here. Currently we just emulate the put
-    limits because it was involved in a kwarg.
+    We can emulate EpicsSignal features here. We currently emulate the put
+    limits and some enum handling.
     """
     def __init__(self, read_pv, write_pv=None, *, pv_kw=None,
                  put_complete=False, string=False, limits=False,
@@ -1103,9 +1104,12 @@ class FakeEpicsSignal(SynSignal):
         """
         Mimic EpicsSignal signature
         """
+        self.as_string = string
+        self._enum_strs = None
         super().__init__(name=name, **kwargs)
         self._use_limits = limits
         self._put_func = None
+        self._limits = None
 
     def sim_set_func(self, func):
         """
@@ -1121,10 +1125,35 @@ class FakeEpicsSignal(SynSignal):
         """
         self._put_func = putter
 
-    def put(self, *args, **kwargs):
+    def get(self, *, as_string=None, connection_timeout=1.0, **kwargs):
+        """
+        Implement getting as enum strings
+        """
+        if as_string is None:
+            as_string = self.as_string
+
+        value = super().get()
+
+        if as_string:
+            if self.enum_strs is not None and isinstance(value, int):
+                return self.enum_strs[value]
+            elif value is not None:
+                return str(value)
+        return value
+
+    def put(self, value, *args, **kwargs):
+        """
+        Implement putting as enum strings and put functions
+        """
+        if self.enum_strs is not None:
+            if value in self.enum_strs:
+                value = self.enum_strs.index(value)
+            elif isinstance(value, str):
+                err = '{} not in enum strs {}'.format(value, self.enum_strs)
+                raise ValueError(err)
         if self._put_func is not None:
-            return self._put_func(*args, **kwargs)
-        return super().put(*args, **kwargs)
+            return self._put_func(value, *args, **kwargs)
+        return super().put(value, *args, **kwargs)
 
     def sim_put(self, *args, **kwargs):
         """
@@ -1134,6 +1163,27 @@ class FakeEpicsSignal(SynSignal):
         every fake signal.
         """
         return Signal.put(self, *args, **kwargs)
+
+    @property
+    def enum_strs(self):
+        """
+        Simulated enum strings.
+
+        Use sim_set_enum_strs during setup to set the enum strs.
+        """
+        return self._enum_strs
+
+    def sim_set_enum_strs(self, enums):
+        """
+        Set the enum_strs for a fake device
+
+        Parameters
+        ----------
+        enums: list or tuple of str
+            The enums will be accessed by array index, e.g. the first item in
+            enums will be 0, the next will be 1, etc.
+        """
+        self._enum_strs = enums
 
     @property
     def limits(self):
@@ -1147,9 +1197,11 @@ class FakeEpicsSignal(SynSignal):
 
     def check_value(self, value):
         """
-        Check fake limits before putting
+        Implement some of the checks from EpicsSignal
         """
         super().check_value(value)
+        if value is None:
+            raise ValueError('Cannot write None to EPICS PVs')
         if self._use_limits and not self.limits[0] < value < self.limits[1]:
             raise LimitError('value={} limits={}'.format(value, self.limits))
 
@@ -1162,7 +1214,8 @@ class FakeEpicsSignalRO(SynSignalRO, FakeEpicsSignal):
 
 
 fake_device_cache = {EpicsSignal: FakeEpicsSignal,
-                     EpicsSignalRO: FakeEpicsSignalRO}
+                     EpicsSignalRO: FakeEpicsSignalRO,
+                     EpicsSignalWithRBV: FakeEpicsSignal}
 
 class Camera(Device):
     # LJK 
