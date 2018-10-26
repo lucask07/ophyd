@@ -4,28 +4,22 @@
 # University of St. Thomas
 
 # standard library imports 
-import sys
-import numpy as np
-import scipy.signal as signal
 import functools
 
-# imports that require sys.path.append pointers
+# imports that may require package installation
+import numpy as np
+import scipy.signal as signal
 
-# from instrbuilder.setup import scpi_lia, scpi_fg, scpi_fg2, scpi_dmm, scpi_osc, data_save
 from instrbuilder.setup import data_save
 from ophyd.scpi_like import ScpiSignal, ScpiSignalBase, ScpiSignalFileSave, StatCalculator
 from ophyd import Device, Component, Signal
 from ophyd.device import Kind
-from instrbuilder.scpi import SCPI
 
 
-class BlankCommHandle():
+class BlankCommHandle:
     def __init__(self):
         self.write = None
         self.ask = None
-
-bch = BlankCommHandle()
-scpi = SCPI([], bch)
 
 
 def create_filter(order, sample_rate, tau):
@@ -78,16 +72,17 @@ class BasicStatistics(Device):
 
 class FilterStatistics(Device):
 
-    # TODO: How to not re-run the filter for each statistic, maybe by re-assigning _img below
+    # TODO: How to not re-run the filter for each statistic,
+    #       by re-assigning _img below?
+
     components = {}
 
     # use functools.partial to input all parameters but the data array
     #   generate the filter numerator and denominator here
 
     order = 1  # db/octave = order*6dB
-    sample_rate = 1220.680518480077 * 8  # 5e6/512/8*8 Hz
-    print('Sample rate = {} [Hz]'.format(sample_rate))
-    tau = 30e-3
+    sample_rate = 400e3/64/16*8  # with on-board oscillator
+    tau = 10e-3  # consistent with SR810
 
     func_list = ['filter_6dB', 'filter_24dB']
 
@@ -99,7 +94,7 @@ class FilterStatistics(Device):
         func = functools.partial(apply_filter, num=num, denom=denom, sample_rate=sample_rate,
                                  tau=tau, final_stat_function=stat_func)
         components[func_name + '_' + stat_func.__name__] = Component(StatCalculator, name=func, img=None,
-                                                               stat_func=func, kind=Kind.hinted)
+                                                                     stat_func=func, kind=Kind.hinted)
 
     order = 4  # db/octave = order*24dB
     num, denom = create_filter(order=order, sample_rate=sample_rate, tau=tau)
@@ -108,7 +103,7 @@ class FilterStatistics(Device):
         func = functools.partial(apply_filter, num=num, denom=denom, sample_rate=sample_rate,
                                  tau=tau, final_stat_function=stat_func)
         components[func_name + '_' + stat_func.__name__] = Component(StatCalculator, name=func, img=None,
-                                                               stat_func=func, kind=Kind.hinted)
+                                                                     stat_func=func, kind=Kind.hinted)
     locals().update(components)
 
     def __init__(self, array_source, *args, **kwargs):
@@ -212,8 +207,8 @@ def generate_ophyd_obj(name, scpi_obj):
                                                      control_layer=scpi_obj, cmd_name=cmd.name,
                                                      save_path=data_save.directory,
                                                      kind=Kind.normal,
-                                                     precision=10, # this precision won't print the full file name,
-                                                                   # but enough to be unique
+                                                     precision=10,  # this precision won't print the full file name,
+                                                                    # but enough to be unique
                                                      configs={'reads_per_trigger': 1024, 'aperture': 20e-6,
                                                               'trig_source': 'EXT', 'trig_count': 1})
 
@@ -222,12 +217,12 @@ def generate_ophyd_obj(name, scpi_obj):
                                                      control_layer=scpi_obj, cmd_name=cmd.name,
                                                      save_path=data_save.directory,
                                                      kind=Kind.normal,
-                                                     precision=10,
-                                                     # this precision won't print the full file name,
-                                                     # but enough to be unique
+                                                     precision=10,  # this precision won't print the full file name,
+                                                                    # but enough to be unique
                                                      configs={'reads_per_trigger': 8, 'aperture': 20e-6,
                                                               'trig_source': 'EXT', 'trig_count': 2048,
-                                                              'sample_timer': 102.4e-6, 'repeats': 1})
+                                                              'sample_timer': 320e-6, 'repeats': 1})
+                                                              # 'sample_timer': 102.4e-6, 'repeats': 1})
                 if cmd.getter_type.returns_array:
                     print(
                         'Skipping command {}. Returns an array but a status monitor dictionary is not prepared'.format(
@@ -258,6 +253,18 @@ def generate_ophyd_obj(name, scpi_obj):
                     if (not cmd.setter) and cmd.getter_inputs == 1 and '{ac_dc}' in cmd.ascii_str:
                         components[cmd.name + '_ac'] = Component(ScpiSignalBase, control_layer=scpi_obj, cmd_name=cmd.name,
                                                                  configs={'ac_dc': 'AC'}, kind=comp_kind)
+
+                #  -----------------------  PowerSupply  --------------
+                if isinstance(scpi_obj, instruments.RigolPowerSupply):
+                    #   Create components per chanel
+                    for chan in scpi_obj._channels:
+                        if cmd.setter and cmd.getter_inputs == 1 and cmd.setter_inputs == 2 and '{chan}' in cmd.ascii_str:
+                            components[cmd.name + '_chan{}'.format(chan)] = Component(ScpiSignal, control_layer=scpi_obj, cmd_name=cmd.name,
+                                                                                      configs={'chan': chan}, kind=comp_kind)
+                        if (not cmd.setter) and cmd.getter_inputs == 1 and '{channel}' in cmd.ascii_str:
+                            components[cmd.name + '_chan{}'.format(chan)] = Component(ScpiSignalBase, control_layer=scpi_obj, cmd_name=cmd.name,
+                                                                                      configs={'chan': chan}, kind=comp_kind)
+
 
         elif isinstance(scpi_obj, ic.IC):
             if cmd.read_write in ['R/W', 'W']:
@@ -394,7 +401,6 @@ class FunctionGen():
 
 # class Oscilloscope(Device):
 #     components = {}
-#     channels = [1, 2]
 #     for cmd_key, cmd in scpi_osc._cmds.items():
 #         if cmd.is_config:
 #             comp_kind = Kind.config
@@ -429,13 +435,14 @@ class FunctionGen():
 #                                                  configs={}, kind=comp_kind)
 #
 #         #   Create components per chanel
-#         for channel in channels:
-#             if cmd.setter and cmd.getter_inputs == 1 and cmd.setter_inputs == 2 and '{channel}' in cmd.ascii_str:
-#                 components[cmd.name + '_chan{}'.format(channel)] = Component(ScpiSignal, scpi_cl=scpi_osc, cmd_name=cmd.name,
-#                                                  configs={'channel': channel}, kind=comp_kind)
+#         channels = [1, 2, 3, 4]
+#         for chan in channels:
+#             if cmd.setter and cmd.getter_inputs == 1 and cmd.setter_inputs == 2 and '{chan}' in cmd.ascii_str:
+#                 components[cmd.name + '_chan{}'.format(chan)] = Component(ScpiSignal, scpi_cl=scpi_osc, cmd_name=cmd.name,
+#                                                  configs={'chan': channel}, kind=comp_kind)
 #             if (not cmd.setter) and cmd.getter_inputs == 1 and '{channel}' in cmd.ascii_str:
-#                 components[cmd.name + '_chan{}'.format(channel)] = Component(ScpiSignalBase, scpi_cl=scpi_osc, cmd_name=cmd.name,
-#                                                  configs={'channel': channel}, kind=comp_kind)
+#                 components[cmd.name + '_chan{}'.format(chan)] = Component(ScpiSignalBase, scpi_cl=scpi_osc, cmd_name=cmd.name,
+#                                                  configs={'chan': channel}, kind=comp_kind)
 #
 #         if cmd.name == 'meas_phase':  # requires two channels to find phase difference
 #             components[cmd.name] = Component(ScpiSignalBase, scpi_cl=scpi_osc, cmd_name=cmd.name,
