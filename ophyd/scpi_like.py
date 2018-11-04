@@ -493,10 +493,9 @@ class StatCalculator(SynSignal):
 
     Example
     -------
-
     """
 
-    def __init__(self, name, stat_func, img = None, **kwargs):
+    def __init__(self, name, stat_func, img=None, **kwargs):
         self._img = img
 
         def func():
