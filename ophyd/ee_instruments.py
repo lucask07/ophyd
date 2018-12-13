@@ -10,11 +10,14 @@ import functools
 import numpy as np
 import scipy.signal as signal
 
-from instrbuilder.setup import data_save
+from instrbuilder.config import data_save
 from ophyd.scpi_like import ScpiSignal, ScpiSignalBase, ScpiSignalFileSave, StatCalculator
 from ophyd import Device, Component, Signal
 from ophyd.device import Kind
 
+import scpi  # check if instance is a member of this class
+import ic
+import instruments
 
 class BlankCommHandle:
     def __init__(self):
@@ -114,10 +117,6 @@ class FilterStatistics(Device):
                 # update the name
                 getattr(self, func + '_' + stat_func.__name__).name = array_source.name + getattr(self, func + '_' +  stat_func.__name__).name
 
-import scpi  # check if instance is a member of this class
-import ic
-import instruments
-
 
 def generate_ophyd_obj(name, scpi_obj):
     components = {}
@@ -191,6 +190,60 @@ def generate_ophyd_obj(name, scpi_obj):
                         if (not cmd.setter) and cmd.getter_inputs == 1 and '{channel}' in cmd.ascii_str:
                             components[cmd.name + '_chan{}'.format(chan)] = Component(ScpiSignalBase, control_layer=scpi_obj, cmd_name=cmd.name,
                                                                                       configs={'chan': chan}, kind=comp_kind)
+                #  -----------------------  SRSLockIn LockIn  --------------
+                if isinstance(scpi_obj, instruments.SRSLockIn):
+                    # Create components for long SCPI commands, those that need configuration inputs
+                    components['off_exp'] = Component(ScpiSignal,
+                                                      control_layer=scpi_obj, cmd_name='off_exp',
+                                                      configs={'chan': 2})  # offset and expand
+
+                    components['ch1_disp'] = Component(ScpiSignal,
+                                                       control_layer=scpi_obj, cmd_name='ch1_disp',
+                                                       configs={'ratio': 0})  # ratio the display to None (0), Aux1 (1) or Aux2 (2)
+
+
+                #  -----------------------  Oscilloscope  -----------------------
+                if isinstance(scpi_obj, instruments.KeysightOscilloscope):
+                    if hasattr(cmd.getter_type, 'returns_array'):
+                        if cmd.name == 'display_data':
+                            print('Creating display data command')
+
+                            def save_png(filename, data):
+                                with open(filename, 'wb') as out_f:
+                                    out_f.write(bytearray(data))
+
+                            components[cmd.name] = Component(ScpiSignalFileSave, name=cmd.name,
+                                                             control_layer=scpi_obj, cmd_name=cmd.name,
+                                                             save_path=data_save.directory,
+                                                             save_func=save_png, save_spec='PNG', save_ext='png',
+                                                             kind=Kind.normal,
+                                                             precision=10)  # this precision won't print the full file name, but enough to be unique
+
+                        elif cmd.getter_type.returns_array:
+                            print('Skipping Oscilloscpe command {}.'.format(cmd.name))
+                            print(' Returns an array but a status monitor dictionary is not prepared')
+
+                    else:
+                        if cmd.setter and cmd.getter_inputs == 0 and cmd.setter_inputs < 2:
+                            components[cmd.name] = Component(ScpiSignal, control_layer=scpi_obj, cmd_name=cmd.name,
+                                                             configs={}, kind=comp_kind)
+                        if (not cmd.setter) and cmd.getter_inputs == 0:
+                            components[cmd.name] = Component(ScpiSignalBase, control_layer=scpi_obj, cmd_name=cmd.name,
+                                                             configs={}, kind=comp_kind)
+
+                    #   Create components per chanel
+                    channels = [1, 2, 3, 4]
+                    for chan in channels:
+                        if cmd.setter and cmd.getter_inputs == 1 and cmd.setter_inputs == 2 and '{chan}' in cmd.ascii_str:
+                            components[cmd.name + '_chan{}'.format(chan)] = Component(ScpiSignal, control_layer=scpi_obj, cmd_name=cmd.name,
+                                                                                      configs={'chan': chan}, kind=comp_kind)
+                        if (not cmd.setter) and cmd.getter_inputs == 1 and '{chan}' in cmd.ascii_str:
+                            components[cmd.name + '_chan{}'.format(chan)] = Component(ScpiSignalBase, control_layer=scpi_obj, cmd_name=cmd.name,
+                                                                                      configs={'chan': chan}, kind=comp_kind)
+
+                    if cmd.name == 'meas_phase':  # requires two channels to find phase difference
+                        components[cmd.name] = Component(ScpiSignalBase, control_layer=scpi_obj, cmd_name=cmd.name,
+                                                         configs={'chan1': 1, 'chan2': 2}, kind=comp_kind)
 
 
         elif isinstance(scpi_obj, ic.IC):
