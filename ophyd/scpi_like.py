@@ -36,7 +36,7 @@ class ScpiSignalBase(Signal):
     """
     def __init__(self, *, control_layer, cmd_name, name=None,
                  precision=7, configs={}, dtype='number',
-                 shape=1, status_monitor=None,
+                 shape=[], status_monitor=None,
                  **kwargs):
 
         cmd = control_layer._cmds[cmd_name]
@@ -209,7 +209,7 @@ class ScpiCompositeBase(Signal):
     """
     def __init__(self, *, get_func, name,
                 precision = 7, configs = {}, dtype = 'number',
-                shape = 1, status_monitor = None,
+                shape = [], status_monitor = None,
                 **kwargs):
 
         self._read_name = name
@@ -320,7 +320,7 @@ class ScpiCompositeSignal(ScpiCompositeBase):
 
     def __init__(self, *, get_func, name, set_func,
                 precision = 7, configs = {}, dtype = 'number',
-                shape = 1, status_monitor = None,
+                shape = [], status_monitor = None,
                 **kwargs):
         self._set = set_func
         super().__init__(get_func=get_func, name=name, configs=configs)
