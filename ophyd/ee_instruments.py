@@ -15,9 +15,9 @@ from ophyd.scpi_like import ScpiSignal, ScpiSignalBase, ScpiSignalFileSave, Stat
 from ophyd import Device, Component, Signal
 from ophyd.device import Kind
 
-import scpi  # check if instance is a member of this class
-import ic
-import instruments
+import instrbuilder.scpi as scpi # check if instance is a member of this class
+import instrbuilder.ic as ic 
+import instrbuilder.instruments as instruments
 
 class BlankCommHandle:
     def __init__(self):
