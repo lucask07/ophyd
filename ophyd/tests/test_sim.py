@@ -1,5 +1,7 @@
-from ophyd.sim import (SynGauss, Syn2DGauss, SynAxis,
-                       make_fake_device, FakeEpicsSignal, FakeEpicsSignalRO)
+from ophyd.sim import (SynGauss, Syn2DGauss, SynAxis, make_fake_device,
+                       FakeEpicsSignal, FakeEpicsSignalRO,
+                       FakeEpicsSignalWithRBV, clear_fake_device,
+                       instantiate_fake_device, SynSignalWithRegistry)
 from ophyd.device import (Device, Component as Cpt, FormattedComponent as FCpt,
                           DynamicDeviceComponent as DDCpt)
 from ophyd.signal import Signal, EpicsSignal, EpicsSignalRO
@@ -7,6 +9,8 @@ from ophyd.areadetector.base import EpicsSignalWithRBV
 from ophyd.utils import ReadOnlyError, LimitError, DisconnectedError
 import numpy as np
 import pytest
+import tempfile
+import shutil
 
 
 def test_random_state_gauss1d():
@@ -117,7 +121,7 @@ def test_synaxis_timestamps():
 
 # Classes for testing make_fake_device
 class SampleNested(Device):
-    yolk = Cpt(EpicsSignal, ':YOLK')
+    yolk = Cpt(EpicsSignal, ':YOLK', string=True)
     whites = Cpt(EpicsSignalRO, ':WHITES')
 
 
@@ -125,18 +129,23 @@ class Sample(Device):
     egg = Cpt(SampleNested, ':EGG')
     butter = Cpt(EpicsSignal, ':BUTTER')
     flour = Cpt(EpicsSignalRO, ':FLOUR')
+    baster = FCpt(EpicsSignal, '{self.drawer}:BASTER')
     sink = FCpt(EpicsSignal, '{self.sink_location}:SINK')
     fridge = DDCpt({'milk': (EpicsSignal, ':MILK', {}),
                     'cheese': (EpicsSignalRO, ':CHEESE', {})})
     nothing = Cpt(Signal)
 
-    sink_location = 'COUNTER'
+    def __init__(self, prefix, *, drawer='UNDER_THE_SINK',
+                 sink_location='COUNTER', **kwargs):
+        self.drawer = drawer
+        self.sink_location = sink_location
+        super().__init__(prefix, **kwargs)
 
 
 def test_make_fake_device():
     assert make_fake_device(EpicsSignal) == FakeEpicsSignal
     assert make_fake_device(EpicsSignalRO) == FakeEpicsSignalRO
-    assert make_fake_device(EpicsSignalWithRBV) == FakeEpicsSignal
+    assert make_fake_device(EpicsSignalWithRBV) == FakeEpicsSignalWithRBV
 
     FakeSample = make_fake_device(Sample)
     my_fake = FakeSample('KITCHEN', name='kitchen')
@@ -159,6 +168,31 @@ def test_make_fake_device():
     assert isinstance(my_fake.fridge.cheese, FakeEpicsSignalRO)
 
     my_fake.read()
+
+
+def test_clear_fake_device():
+    FakeSample = make_fake_device(Sample)
+    my_fake = FakeSample('KITCHEN', name='kitchen')
+    clear_fake_device(my_fake, default_value=49,
+                      default_string_value='string')
+    assert my_fake.butter.value == 49
+    assert my_fake.flour.value == 49
+    assert my_fake.sink.value == 49
+    assert my_fake.egg.yolk.value == 'string'
+    assert my_fake.egg.whites.value == 49
+
+
+def test_instantiate_fake_device():
+    my_fake = instantiate_fake_device(Sample)
+    assert my_fake.drawer == 'UNDER_THE_SINK'
+    assert my_fake.sink_location == 'COUNTER'
+    assert my_fake.name == 'FakeSample'
+    assert my_fake.prefix == '_prefix'
+
+    my_fake = instantiate_fake_device(Sample, drawer='JUNK_DRAWER')
+    assert my_fake.drawer == 'JUNK_DRAWER'
+    assert my_fake.sink_location == 'COUNTER'
+    assert my_fake.name == 'FakeSample'
 
 
 def test_do_not_break_real_class():
@@ -212,3 +246,21 @@ def test_fake_epics_signal_enum():
     assert sig.get(as_string=False) == 2
     with pytest.raises(ValueError):
         sig.put('bazillion')
+
+
+def test_SynSignalWithRegistry():
+    tempdirname = tempfile.mkdtemp()
+
+    def data_func():
+        return np.array(np.ones((10, 10)))
+
+    img = SynSignalWithRegistry(data_func, save_path=tempdirname,
+                                name='img', labels={'detectors'})
+    img.stage()
+    img.trigger()
+    d0 = img.read()
+    assert int(d0['img']['value'][-1]) == 0
+    img.trigger()
+    d1 = img.read()
+    assert int(d1['img']['value'][-1]) == 1  # increased by 1
+    shutil.rmtree(tempdirname)

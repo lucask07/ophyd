@@ -7,18 +7,22 @@
 '''
 
 
+import functools
+import logging
+import numpy as np
+import operator
 import re
 import time as ttime
-import logging
-from collections import OrderedDict
-import numpy as np
 
-from ophyd import Component as Cpt
+from collections import OrderedDict
+
+from .. import Component as Cpt
 from .base import (ADBase, ADComponent as C, ad_group,
                    EpicsSignalWithRBV as SignalWithRBV)
 from ..signal import (EpicsSignalRO, EpicsSignal, ArrayAttributeSignal)
 from ..device import DynamicDeviceComponent as DDC, GenerateDatumInterface
 from ..utils import enum, set_and_wait
+from ..utils.errors import PluginMisconfigurationError
 
 
 logger = logging.getLogger(__name__)
@@ -58,15 +62,13 @@ class PluginBase(ADBase):
     def __init__(self, *args, **kwargs):
 
         super().__init__(*args, **kwargs)
-        # make sure it is the right type of plugin
-        if (self._plugin_type is not None and
-                not self.plugin_type.get().startswith(self._plugin_type)):
-            raise TypeError('Trying to use {!r} class which is for {!r} '
-                            'plugin type for a plugin that reports being '
-                            'of type {!r} with base prefix '
-                            '{!r}'.format(self.__class__.__name__,
-                                          self._plugin_type,
-                                          self.plugin_type.get(), self.prefix))
+
+        if self._plugin_type is not None:
+            # Misconfigured until proven otherwise - this will happen when
+            # plugin_type first connects
+            self._misconfigured = None
+        else:
+            self._misconfigured = False
 
         self.enable_on_stage()
         self.stage_sigs.move_to_end('enable', last=False)
@@ -100,6 +102,19 @@ class PluginBase(ADBase):
 
     def stage(self):
         super().stage()
+
+        if self._misconfigured is None:
+            # If plugin_type has not yet connected, ensure it has here
+            self.plugin_type.wait_for_connection()
+            # And for good measure, make sure the callback has been called:
+            self._plugin_type_connected(connected=True)
+
+        if self._misconfigured:
+            raise PluginMisconfigurationError(
+                'Plugin prefix {!r}: trying to use {!r} class (with plugin '
+                'type={!r}) but the plugin reports it is of type {!r}'
+                ''.format(self.prefix, self.__class__.__name__,
+                          self._plugin_type, self.plugin_type.get()))
 
     def enable_on_stage(self):
         """
@@ -221,7 +236,7 @@ class PluginBase(ADBase):
     nd_array_address = C(SignalWithRBV, 'NDArrayAddress')
     nd_array_port = C(SignalWithRBV, 'NDArrayPort')
     ndimensions = C(EpicsSignalRO, 'NDimensions_RBV')
-    plugin_type = C(EpicsSignalRO, 'PluginType_RBV')
+    plugin_type = C(EpicsSignalRO, 'PluginType_RBV', lazy=False)
 
     queue_free = C(EpicsSignal, 'QueueFree')
     queue_free_low = C(EpicsSignal, 'QueueFreeLow')
@@ -232,11 +247,34 @@ class PluginBase(ADBase):
     time_stamp = C(EpicsSignalRO, 'TimeStamp_RBV')
     unique_id = C(EpicsSignalRO, 'UniqueId_RBV')
 
+    @plugin_type.sub_meta
+    def _plugin_type_connected(self, connected, **kw):
+        'Connection callback on the plugin type'
+        if not connected or self._plugin_type is None:
+            return
+
+        plugin_type = self.plugin_type.get()
+        self._misconfigured = not plugin_type.startswith(self._plugin_type)
+        if self._misconfigured:
+            logger.warning(
+                'Plugin prefix %r: trying to use %r class (plugin type=%r) '
+                ' but the plugin reports it is of type %r',
+                self.prefix, self.__class__.__name__, self._plugin_type,
+                plugin_type
+            )
+        else:
+            logger.debug(
+                'Plugin prefix %r type confirmed: %r class (plugin type=%r);'
+                ' plugin reports it is of type %r',
+                self.prefix, self.__class__.__name__, self._plugin_type,
+                plugin_type
+            )
+
 
 @register_plugin
 class ImagePlugin(PluginBase):
     _default_suffix = 'image1:'
-    _suffix_re = 'image\d:'
+    _suffix_re = r'image\d:'
     _html_docs = ['NDPluginStdArrays.html']
     _plugin_type = 'NDPluginStdArrays'
 
@@ -245,7 +283,7 @@ class ImagePlugin(PluginBase):
     @property
     def image(self):
         array_size = self.array_size.get()
-        if array_size == [0, 0, 0]:
+        if array_size == (0, 0, 0):
             raise RuntimeError('Invalid image; ensure array_callbacks are on')
 
         if array_size[-1] == 0:
@@ -259,7 +297,7 @@ class ImagePlugin(PluginBase):
 @register_plugin
 class StatsPlugin(PluginBase):
     _default_suffix = 'Stats1:'
-    _suffix_re = 'Stats\d:'
+    _suffix_re = r'Stats\d:'
     _html_docs = ['NDPluginStats.html']
     _plugin_type = 'NDPluginStats'
 
@@ -396,7 +434,7 @@ class StatsPlugin(PluginBase):
 @register_plugin
 class ColorConvPlugin(PluginBase):
     _default_suffix = 'CC1:'
-    _suffix_re = 'CC\d:'
+    _suffix_re = r'CC\d:'
     _html_docs = ['NDPluginColorConvert.html']
     _plugin_type = 'NDPluginColorConvert'
     _default_configuration_attrs = (PluginBase._default_configuration_attrs +
@@ -409,7 +447,7 @@ class ColorConvPlugin(PluginBase):
 @register_plugin
 class ProcessPlugin(PluginBase):
     _default_suffix = 'Proc1:'
-    _suffix_re = 'Proc\d:'
+    _suffix_re = r'Proc\d:'
     _html_docs = ['NDPluginProcess.html']
     _plugin_type = 'NDPluginProcess'
     _default_configuration_attrs = (PluginBase._default_configuration_attrs + (
@@ -551,7 +589,7 @@ class OverlayPlugin(PluginBase):
         The areaDetector plugin prefix
     '''
     _default_suffix = 'Over1:'
-    _suffix_re = 'Over\d:'
+    _suffix_re = r'Over\d:'
     _html_docs = ['NDPluginOverlay.html']
     _plugin_type = 'NDPluginOverlay'
     _default_configuration_attrs = (PluginBase._default_configuration_attrs + (
@@ -578,7 +616,7 @@ class OverlayPlugin(PluginBase):
 class ROIPlugin(PluginBase):
 
     _default_suffix = 'ROI1:'
-    _suffix_re = 'ROI\d:'
+    _suffix_re = r'ROI\d:'
     _html_docs = ['NDPluginROI.html']
     _plugin_type = 'NDPluginROI'
     _default_configuration_attrs = (PluginBase._default_configuration_attrs + (
@@ -690,7 +728,7 @@ class ROIPlugin(PluginBase):
 @register_plugin
 class TransformPlugin(PluginBase):
     _default_suffix = 'Trans1:'
-    _suffix_re = 'Trans\d:'
+    _suffix_re = r'Trans\d:'
     _html_docs = ['NDPluginTransform.html']
     _plugin_type = 'NDPluginTransform'
 
@@ -704,7 +742,6 @@ class TransformPlugin(PluginBase):
                      doc='Array size',
                      default_read_attrs=('height', 'width', 'depth'))
 
-
     name_ = C(EpicsSignal, 'Name')
     origin_location = C(SignalWithRBV, 'OriginLocation')
     t1_max_size = DDC(ad_group(EpicsSignal,
@@ -714,14 +751,12 @@ class TransformPlugin(PluginBase):
                       doc='Transform 1 max size',
                       default_read_attrs=('size0', 'size1', 'size2'))
 
-
     t2_max_size = DDC(ad_group(EpicsSignal,
                                (('size0', 'T2MaxSize0'),
                                 ('size1', 'T2MaxSize1'),
                                 ('size2', 'T2MaxSize2'))),
                       doc='Transform 2 max size',
                       default_read_attrs=('size0', 'size1', 'size2'))
-
 
     t3_max_size = DDC(ad_group(EpicsSignal,
                                (('size0', 'T3MaxSize0'),
@@ -730,14 +765,12 @@ class TransformPlugin(PluginBase):
                       doc='Transform 3 max size',
                       default_read_attrs=('size0', 'size1', 'size2'))
 
-
     t4_max_size = DDC(ad_group(EpicsSignal,
                                (('size0', 'T4MaxSize0'),
                                 ('size1', 'T4MaxSize1'),
                                 ('size2', 'T4MaxSize2'))),
                       doc='Transform 4 max size',
                       default_read_attrs=('size0', 'size1', 'size2'))
-
 
     types = DDC(ad_group(EpicsSignal,
                          (('type1', 'Type1'),
@@ -746,7 +779,6 @@ class TransformPlugin(PluginBase):
                           ('type4', 'Type4'))),
                 doc='Transform types',
                 default_read_attrs=('type1', 'type2', 'type3', 'type4'))
-
 
 
 class FilePlugin(PluginBase, GenerateDatumInterface):
@@ -764,7 +796,7 @@ class FilePlugin(PluginBase, GenerateDatumInterface):
         'file_write_mode',
         'full_file_name',
         'num_capture'
-        ))
+    ))
     FileWriteMode = enum(SINGLE=0, CAPTURE=1, STREAM=2)
 
     auto_increment = C(SignalWithRBV, 'AutoIncrement')
@@ -792,7 +824,7 @@ class FilePlugin(PluginBase, GenerateDatumInterface):
 @register_plugin
 class NetCDFPlugin(FilePlugin):
     _default_suffix = 'netCDF1:'
-    _suffix_re = 'netCDF\d:'
+    _suffix_re = r'netCDF\d:'
     _html_docs = ['NDFileNetCDF.html']
     _plugin_type = 'NDFileNetCDF'
 
@@ -800,7 +832,7 @@ class NetCDFPlugin(FilePlugin):
 @register_plugin
 class TIFFPlugin(FilePlugin):
     _default_suffix = 'TIFF1:'
-    _suffix_re = 'TIFF\d:'
+    _suffix_re = r'TIFF\d:'
     _html_docs = ['NDFileTIFF.html']
     _plugin_type = 'NDFileTIFF'
 
@@ -808,7 +840,7 @@ class TIFFPlugin(FilePlugin):
 @register_plugin
 class JPEGPlugin(FilePlugin):
     _default_suffix = 'JPEG1:'
-    _suffix_re = 'JPEG\d:'
+    _suffix_re = r'JPEG\d:'
     _html_docs = ['NDFileJPEG.html']
     _plugin_type = 'NDFileJPEG'
     _default_configuration_attrs = (FilePlugin._default_configuration_attrs + (
@@ -820,7 +852,7 @@ class JPEGPlugin(FilePlugin):
 @register_plugin
 class NexusPlugin(FilePlugin):
     _default_suffix = 'Nexus1:'
-    _suffix_re = 'Nexus\d:'
+    _suffix_re = r'Nexus\d:'
     _html_docs = ['NDFileNexus.html']
     # _plugin_type = 'NDPluginFile'  # TODO was this ever fixed?
     _plugin_type = 'NDPluginNexus'
@@ -835,7 +867,7 @@ class NexusPlugin(FilePlugin):
 @register_plugin
 class HDF5Plugin(FilePlugin):
     _default_suffix = 'HDF1:'
-    _suffix_re = 'HDF\d:'
+    _suffix_re = r'HDF\d:'
     _html_docs = ['NDFileHDF5.html']
     _plugin_type = 'NDFileHDF5'
 
@@ -879,7 +911,6 @@ class HDF5Plugin(FilePlugin):
                          doc='Extra dimension sizes (XYN)',
                          default_read_attrs=('size_x', 'size_y', 'size_n'))
 
-
     io_speed = C(EpicsSignal, 'IOSpeed')
     num_col_chunks = C(SignalWithRBV, 'NumColChunks')
     num_data_bits = C(SignalWithRBV, 'NumDataBits')
@@ -905,7 +936,7 @@ class HDF5Plugin(FilePlugin):
                             (self.parent.cam.image_mode, 'Single'),
                             (self.parent.cam.trigger_mode, 'Internal'),
                             # just in case tha acquisition time is set very long...
-                            (self.parent.cam.acquire_time , 1),
+                            (self.parent.cam.acquire_time, 1),
                             (self.parent.cam.acquire_period, 1),
                             (self.parent.cam.acquire, 1)])
 
@@ -925,7 +956,7 @@ class HDF5Plugin(FilePlugin):
 @register_plugin
 class MagickPlugin(FilePlugin):
     _default_suffix = 'Magick1:'
-    _suffix_re = 'Magick\d:'
+    _suffix_re = r'Magick\d:'
     _html_docs = ['NDFileMagick']  # sic., no html extension
     _plugin_type = 'NDFileMagick'
     _default_configuration_attrs = (FilePlugin._default_configuration_attrs + (
@@ -934,8 +965,6 @@ class MagickPlugin(FilePlugin):
     bit_depth = C(SignalWithRBV, 'BitDepth')
     compress_type = C(SignalWithRBV, 'CompressType')
     quality = C(SignalWithRBV, 'Quality')
-
-
 
 
 def plugin_from_pvname(pv):

@@ -3,13 +3,7 @@ from itertools import count
 import time
 import logging
 
-from .status import (StatusBase, MoveStatus, DeviceStatus)
-
-try:
-    from enum import IntFlag
-except ImportError:
-    # we must be in python 3.5
-    from .utils._backport_enum import IntFlag
+from enum import IntFlag
 
 
 class Kind(IntFlag):
@@ -20,10 +14,10 @@ class Kind(IntFlag):
     traverse it in read(), read_configuration(), or neither. Additionally, if
     decides whether to include its name in `.hints['fields']`.
     """
-    omitted = 0
-    normal = 1
-    config = 2
-    hinted = 5  # Notice that bool(hinted & normal) is True.
+    omitted = 0b000
+    normal = 0b001
+    config = 0b010
+    hinted = 0b101  # Notice that bool(hinted & normal) is True.
 
 
 class UnknownSubscription(KeyError):
@@ -42,6 +36,9 @@ class OphydObject:
     ----------
     name : str, optional
         The name of the object.
+    attr_name : str, optional
+        The attr name on it's parent (if it has one)
+        ex ``getattr(self.parent, self.attr_name) is self``
     parent : parent, optional
         The object's parent, if it exists in a hierarchy
     kind : a member the Kind IntEnum (or equivalent integer), optional
@@ -54,7 +51,7 @@ class OphydObject:
 
     _default_sub = None
 
-    def __init__(self, *, name=None, parent=None, labels=None,
+    def __init__(self, *, name=None, attr_name='', parent=None, labels=None,
                  kind=None):
         if labels is None:
             labels = set()
@@ -68,6 +65,7 @@ class OphydObject:
         # base name and ref to parent, these go with properties
         if name is None:
             name = ''
+        self._attr_name = attr_name
         if not isinstance(name, str):
             raise ValueError("name must be a string.")
         self._name = name
@@ -101,8 +99,8 @@ class OphydObject:
 
     def _validate_kind(self, val):
         if isinstance(val, str):
-            val = getattr(Kind, val.lower())
-        return val
+            return Kind[val.lower()]
+        return Kind(val)
 
     @property
     def kind(self):
@@ -111,6 +109,18 @@ class OphydObject:
     @kind.setter
     def kind(self, val):
         self._kind = self._validate_kind(val)
+
+    @property
+    def dotted_name(self) -> str:
+        """Return the dotted name
+
+        """
+        names = []
+        obj = self
+        while obj.parent is not None:
+            names.append(obj.attr_name)
+            obj = obj.parent
+        return '.'.join(names[::-1])
 
     @property
     def name(self):
@@ -122,11 +132,19 @@ class OphydObject:
         self._name = name
 
     @property
+    def attr_name(self):
+        return self._attr_name
+
+    @property
     def connected(self):
         '''If the device is connected.
 
         Subclasses should override this'''
         return True
+
+    def destroy(self):
+        '''Disconnect the object from the underlying control layer'''
+        self.unsubscribe_all()
 
     @property
     def parent(self):
@@ -192,7 +210,7 @@ class OphydObject:
         for cb in list(self._callbacks[sub_type].values()):
             cb(*args, **kwargs)
 
-    def subscribe(self, cb, event_type=None, run=True):
+    def subscribe(self, callback, event_type=None, run=True):
         '''Subscribe to events this event_type generates.
 
         The callback will be called as ``cb(*args, **kwargs)`` with
@@ -214,7 +232,7 @@ class OphydObject:
 
         Parameters
         ----------
-        cb : callable
+        callback : callable
             A callable function (that takes kwargs) to be run when the event is
             generated.  The expected signature is ::
 
@@ -241,8 +259,8 @@ class OphydObject:
             callback
 
         '''
-        if not callable(cb):
-            raise ValueError("cb must be callable")
+        if not callable(callback):
+            raise ValueError("callback must be callable")
         # do default event type
         if event_type is None:
             # warnings.warn("Please specify which call back you wish to "
@@ -268,14 +286,14 @@ class OphydObject:
                     cb(*args, **kwargs)
                 except Exception:
                     sub_type = kwargs['sub_type']
-                    self.log.exception('Subscription %s callback '\
-                                       'exception (%s)',
-                                       sub_type, self)
+                    self.log.exception(
+                        'Subscription %s callback exception (%s)',
+                        sub_type, self)
             return inner
         # get next cid
         cid = next(self._cb_count)
-        wrapped = wrap_cb(cb)
-        self._unwrapped_callbacks[event_type][cid] = cb
+        wrapped = wrap_cb(callback)
+        self._unwrapped_callbacks[event_type][cid] = callback
         self._callbacks[event_type][cid] = wrapped
         self._cid_to_event_mapping[cid] = event_type
 
